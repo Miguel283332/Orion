@@ -66,18 +66,20 @@ int main() {
                         n.nt = static_cast<Neurotransmisor>(ntDist(rng));
                         n.receptores.push_back(static_cast<Receptor>(recDist(rng)));
 
-                        // conexiones aleatorias dentro del mismo chunk
+                        // Conexiones aleatorias dentro del mismo chunk
                         int maxCon = std::min(5, neuronasPorChunk - 1);
-                        std::uniform_int_distribution<int> conCountDist(1, maxCon);
-                        std::uniform_int_distribution<int> conDist(1, neuronasPorChunk);
-                        int numCon = conCountDist(rng); // numero variable de conexiones
-                        for (int k = 0; k < numCon; ++k) {
-                            Conexion cox;
-                            cox.destinoID = idGlobal - 1 - conDist(rng) % neuronasPorChunk;
-                            if (cox.destinoID < (idGlobal - neuronasPorChunk))
-                                cox.destinoID = idGlobal - 1; // asegurarse de no ir atras demasiado
-                            cox.tipoNT = static_cast<Neurotransmisor>(ntDist(rng));
-                            n.conexiones.push_back(cox);
+                        if (maxCon > 0) {
+                            std::uniform_int_distribution<int> conCountDist(1, maxCon);
+                            std::uniform_int_distribution<int> conDist(1, neuronasPorChunk);
+                            int numCon = conCountDist(rng); // numero variable de conexiones
+                            for (int k = 0; k < numCon; ++k) {
+                                Conexion cox;
+                                cox.destinoID = idGlobal - 1 - conDist(rng) % neuronasPorChunk;
+                                if (cox.destinoID < (idGlobal - neuronasPorChunk))
+                                    cox.destinoID = idGlobal - 1; // asegurarse de no ir atras demasiado
+                                cox.tipoNT = static_cast<Neurotransmisor>(ntDist(rng));
+                                n.conexiones.push_back(cox);
+                            }
                         }
 
                         region.neuronas.push_back(n);
