@@ -30,6 +30,7 @@ struct Neurona {
     Neurotransmisor nt;
     std::vector<Receptor> receptores;
     std::vector<Conexion> conexiones;
+    bool estado = false;
 
     // Diverge forma funcional a partir de sus propiedades
     std::string formaDivergente() const;
