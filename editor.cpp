@@ -1,76 +1,97 @@
 #include <iostream>
 #include <filesystem>
+#include <random>
+#include <cmath>
 #include "region.hpp"
 
 int main() {
     namespace fs = std::filesystem;
 
-    // Crear directorio structure si no existe
     if (!fs::exists("structure")) {
         fs::create_directory("structure");
     }
 
-    int chunkNum;
-    std::cout << "Numero de chunk: ";
-    if (!(std::cin >> chunkNum)) {
-        std::cerr << "Entrada no valida" << std::endl;
-        return 1;
-    }
-    std::string path = "structure/chunk" + std::to_string(chunkNum) + ".rgn";
-
-    RegionCerebral region;
-    region.nombre = "chunk" + std::to_string(chunkNum);
-
-    int nNeur;
-    std::cout << "Numero de neuronas: ";
-    if (!(std::cin >> nNeur)) {
-        std::cerr << "Entrada no valida" << std::endl;
-        return 1;
+    bool estructuraVacia = true;
+    for (const auto& e : fs::directory_iterator("structure")) {
+        if (e.path().extension() == ".rgn") {
+            estructuraVacia = false;
+            break;
+        }
     }
 
-    for (int i = 0; i < nNeur; ++i) {
-        Neurona n;
-        std::cout << "-- Neurona " << (i+1) << " --" << std::endl;
-        std::cout << "ID: ";
-        std::cin >> n.id;
-        std::cout << "Posicion x y z: ";
-        std::cin >> n.x >> n.y >> n.z;
-        std::string ntStr;
-        std::cout << "Neurotransmisor: ";
-        std::cin >> ntStr;
-        n.nt = parseNT(ntStr);
+    if (estructuraVacia) {
+        int chunks;
+        int neuronasPorChunk;
+        float distancia;
 
-        int numRec;
-        std::cout << "Cantidad de receptores: ";
-        std::cin >> numRec;
-        for (int j = 0; j < numRec; ++j) {
-            std::string recStr;
-            std::cout << "  Receptor " << (j+1) << ": ";
-            std::cin >> recStr;
-            n.receptores.push_back(parseReceptor(recStr));
+        std::cout << "Numero de chunks: ";
+        if (!(std::cin >> chunks)) {
+            std::cerr << "Entrada no valida" << std::endl;
+            return 1;
         }
 
-        int numCon;
-        std::cout << "Cantidad de conexiones: ";
-        std::cin >> numCon;
-        for (int j = 0; j < numCon; ++j) {
-            Conexion c;
-            std::cout << "  Destino ID " << (j+1) << ": ";
-            std::cin >> c.destinoID;
-            std::string ntc;
-            std::cout << "  NT conexion " << (j+1) << ": ";
-            std::cin >> ntc;
-            c.tipoNT = parseNT(ntc);
-            n.conexiones.push_back(c);
+        std::cout << "Neuronas por chunk: ";
+        if (!(std::cin >> neuronasPorChunk)) {
+            std::cerr << "Entrada no valida" << std::endl;
+            return 1;
         }
-        region.neuronas.push_back(n);
-    }
 
-    if (region.guardarEnArchivo(path)) {
-        std::cout << "Chunk guardado en " << path << std::endl;
+        std::cout << "Distancia entre neuronas: ";
+        if (!(std::cin >> distancia)) {
+            std::cerr << "Entrada no valida" << std::endl;
+            return 1;
+        }
+
+        std::mt19937 rng(std::random_device{}());
+        std::uniform_int_distribution<int> ntDist(0, 4); // Neurotransmisores definidos
+        std::uniform_int_distribution<int> recDist(0, 4);
+
+        int idGlobal = 1;
+
+        for (int c = 1; c <= chunks; ++c) {
+            RegionCerebral region;
+            region.nombre = "chunk" + std::to_string(c);
+
+            int dim = std::ceil(std::cbrt(static_cast<double>(neuronasPorChunk)));
+            int count = 0;
+
+            for (int x = 0; x < dim && count < neuronasPorChunk; ++x) {
+                for (int y = 0; y < dim && count < neuronasPorChunk; ++y) {
+                    for (int z = 0; z < dim && count < neuronasPorChunk; ++z) {
+                        Neurona n;
+                        n.id = idGlobal++;
+                        n.x = x * distancia;
+                        n.y = y * distancia;
+                        n.z = z * distancia;
+                        n.nt = static_cast<Neurotransmisor>(ntDist(rng));
+                        n.receptores.push_back(static_cast<Receptor>(recDist(rng)));
+
+                        // conexiones aleatorias dentro del mismo chunk
+                        std::uniform_int_distribution<int> conDist(1, neuronasPorChunk);
+                        int numCon = std::min(3, neuronasPorChunk); // hasta 3 conexiones
+                        for (int k = 0; k < numCon; ++k) {
+                            Conexion cox;
+                            cox.destinoID = idGlobal - 1 - conDist(rng) % neuronasPorChunk;
+                            if (cox.destinoID < (idGlobal - neuronasPorChunk))
+                                cox.destinoID = idGlobal - 1; // asegurarse de no ir atras demasiado
+                            cox.tipoNT = static_cast<Neurotransmisor>(ntDist(rng));
+                            n.conexiones.push_back(cox);
+                        }
+
+                        region.neuronas.push_back(n);
+                        ++count;
+                    }
+                }
+            }
+
+            std::string path = "structure/chunk" + std::to_string(c) + ".rgn";
+            region.guardarEnArchivo(path);
+            std::cout << "[CREADO] " << path << std::endl;
+        }
+
+        std::cout << "Estructura creada con " << chunks << " chunks." << std::endl;
     } else {
-        std::cerr << "No se pudo guardar el archivo" << std::endl;
-        return 1;
+        std::cout << "Estructura ya existente. No se realizaron cambios." << std::endl;
     }
 
     return 0;
