@@ -67,8 +67,10 @@ int main() {
                         n.receptores.push_back(static_cast<Receptor>(recDist(rng)));
 
                         // conexiones aleatorias dentro del mismo chunk
+                        int maxCon = std::min(5, neuronasPorChunk - 1);
+                        std::uniform_int_distribution<int> conCountDist(1, maxCon);
                         std::uniform_int_distribution<int> conDist(1, neuronasPorChunk);
-                        int numCon = std::min(3, neuronasPorChunk); // hasta 3 conexiones
+                        int numCon = conCountDist(rng); // numero variable de conexiones
                         for (int k = 0; k < numCon; ++k) {
                             Conexion cox;
                             cox.destinoID = idGlobal - 1 - conDist(rng) % neuronasPorChunk;

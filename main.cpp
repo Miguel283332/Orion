@@ -6,8 +6,13 @@
 #include <iostream>
 #include <opencv2/opencv.hpp>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <vector>
 #include "region.hpp"
-RegionCerebral rc;
+
+std::vector<RegionCerebral> regiones;
+std::vector<Neurona*> todasNeuronas;
 std::atomic<bool> sistema_activo(true);
 std::mutex mutex_consola;
 void hilo_red() {
@@ -30,12 +35,14 @@ void hilo_terminal() {
             std::lock_guard<std::mutex> lock(mutex_consola);
             std::cout << "[STATS]\n";
             std::cout << "Neurotransmisores activos:\n";
-            for (const auto& n : rc.neuronas) {
-                std::cout << " - Neurona " << n.id << ": " << toString(n.nt) << "\n";
+            for (const auto* n : todasNeuronas) {
+                std::cout << " - Neurona " << n->id << ": " << toString(n->nt) << " estado=" << n->estado << "\n";
             }
         } else if (comando == "save") {
-            rc.guardarEnArchivo("corteza_visual.rgn");
-            std::cout << "[SISTEMA] Región guardada.\n";
+            for (const auto& r : regiones) {
+                r.guardarEnArchivo("structure/" + r.nombre + ".rgn");
+            }
+            std::cout << "[SISTEMA] Regiones guardadas.\n";
         } else {
             std::cout << "[ERROR] Comando no reconocido.\n";
         }
@@ -43,16 +50,28 @@ void hilo_terminal() {
 }
 void hilo_microfono() {
     while (sistema_activo) {
-        std::lock_guard<std::mutex> lock(mutex_consola);
-        std::cout << "[MICRÓFONO] Capturando audio...\n";
+        {
+            std::lock_guard<std::mutex> lock(mutex_consola);
+            std::cout << "[MICRÓFONO] Capturando audio...\n";
+        }
 
-        // Captura 2 segundos de audio y lo guarda como "audio.wav"
         int resultado = system("arecord -f cd -t wav -d 2 -q audio.wav");
 
         if (resultado != 0) {
+            std::lock_guard<std::mutex> lock(mutex_consola);
             std::cerr << "[MICRÓFONO] Error al capturar audio\n";
         } else {
-            std::cout << "[MICRÓFONO] Audio guardado en audio.wav\n";
+            std::vector<char> buffer;
+            std::ifstream f("audio.wav", std::ios::binary);
+            buffer.assign(std::istreambuf_iterator<char>(f), {});
+            size_t bits = buffer.size() * 8;
+            size_t total = std::min(bits, todasNeuronas.size());
+            for (size_t i = 0; i < total; ++i) {
+                bool bit = (buffer[i/8] >> (i%8)) & 1;
+                todasNeuronas[i]->estado = bit;
+            }
+            std::lock_guard<std::mutex> lock(mutex_consola);
+            std::cout << "[MICRÓFONO] Audio procesado en neuronas\n";
         }
 
         std::this_thread::sleep_for(std::chrono::seconds(6));
@@ -68,32 +87,52 @@ void hilo_altavoz() {
 void hilo_camara() {
     while (sistema_activo) {
         std::this_thread::sleep_for(std::chrono::seconds(7));
-        std::lock_guard<std::mutex> lock(mutex_consola);
-        cv::VideoCapture cam(0); // 0 = cámara por defecto
-
+        cv::VideoCapture cam(0);
         if (!cam.isOpened()) {
+            std::lock_guard<std::mutex> lock(mutex_consola);
             std::cerr << "No se pudo abrir la cámara\n";
+            continue;
         }
 
         cv::Mat frame;
-        cam >> frame; // Captura un solo frame
+        cam >> frame;
 
         if (frame.empty()) {
+            std::lock_guard<std::mutex> lock(mutex_consola);
             std::cerr << "Error al capturar imagen\n";
+        } else {
+            std::vector<uchar> buf;
+            cv::imencode(".bmp", frame, buf);
+            size_t bits = buf.size() * 8;
+            size_t total = std::min(bits, todasNeuronas.size());
+            for (size_t i = 0; i < total; ++i) {
+                bool bit = (buf[i/8] >> (i%8)) & 1;
+                todasNeuronas[i]->estado = bit;
+            }
+            std::lock_guard<std::mutex> lock(mutex_consola);
+            std::cout << "[CÁMARA] Imagen procesada en neuronas\n";
         }
-
-        // Guarda la imagen capturada
-        cv::imwrite("captura.jpg", frame);
-
-        std::cout << "Imagen guardada como captura.jpg\n";
-        std::cout << "[CÁMARA] (Simulada) Capturando imagen del entorno...\n";
     }
 }
 
 int main() {
-    rc.nombre = "corteza_visual";
-    if (!rc.cargarDesdeArchivo("corteza_visual.rgn")) {
-        std::cerr << "[⚠️] No se pudo cargar el archivo. Creando red de ejemplo.\n";
+    namespace fs = std::filesystem;
+
+    if (fs::exists("structure")) {
+        for (const auto& e : fs::directory_iterator("structure")) {
+            if (e.path().extension() == ".rgn") {
+                RegionCerebral r;
+                r.nombre = e.path().stem().string();
+                if (r.cargarDesdeArchivo(e.path().string())) {
+                    regiones.push_back(r);
+                }
+            }
+        }
+    }
+
+    if (regiones.empty()) {
+        RegionCerebral r;
+        r.nombre = "corteza_visual";
 
         Neurona n1;
         n1.id = 1; n1.x = 0.1f; n1.y = 0.2f; n1.z = 0.3f;
@@ -107,8 +146,17 @@ int main() {
         n2.receptores = {Receptor::GABA_A};
         n2.conexiones = { {1, Neurotransmisor::DOPAMINA} };
 
-        rc.neuronas = {n1, n2};
-        rc.guardarEnArchivo("corteza_visual.rgn");
+        r.neuronas = {n1, n2};
+        regiones.push_back(r);
+
+        if (!fs::exists("structure")) fs::create_directory("structure");
+        r.guardarEnArchivo("structure/" + r.nombre + ".rgn");
+    }
+
+    for (auto& reg : regiones) {
+        for (auto& n : reg.neuronas) {
+            todasNeuronas.push_back(&n);
+        }
     }
 
     // Lanza hilos
