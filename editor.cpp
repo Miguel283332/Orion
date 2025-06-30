@@ -87,6 +87,17 @@ int main() {
             std::string path = "structure/chunk" + std::to_string(c) + ".rgn";
             region.guardarEnArchivo(path);
             std::cout << "[CREADO] " << path << std::endl;
+
+            // Mostrar conexiones de cada neurona creadas en este chunk
+            for (const auto& n : region.neuronas) {
+                std::cout << "  Neurona " << n.id << " conexiones: ";
+                for (size_t i = 0; i < n.conexiones.size(); ++i) {
+                    std::cout << n.conexiones[i].destinoID;
+                    if (i != n.conexiones.size() - 1) std::cout << ", ";
+                }
+                if (n.conexiones.empty()) std::cout << "(sin conexiones)";
+                std::cout << std::endl;
+            }
         }
 
         std::cout << "Estructura creada con " << chunks << " chunks." << std::endl;
