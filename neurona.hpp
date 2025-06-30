@@ -32,6 +32,10 @@ struct Neurona {
     std::vector<Conexion> conexiones;
     bool estado = false;
 
+    // Constructor por defecto para garantizar valores iniciales conocidos
+    Neurona() : id(0), x(0.0f), y(0.0f), z(0.0f),
+                nt(Neurotransmisor::DESCONOCIDO), estado(false) {}
+
     // Diverge forma funcional a partir de sus propiedades
     std::string formaDivergente() const;
 };
