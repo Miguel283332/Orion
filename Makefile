@@ -2,16 +2,20 @@ CXX = g++
 CXXFLAGS = -std=c++17 -Wall `pkg-config --cflags opencv4`
 LDFLAGS = `pkg-config --libs opencv4`
 
-OBJS = main.o region.o neurona.o
+OBJS_ORION = main.o region.o neurona.o
+OBJS_EDITOR = editor.o region.o neurona.o
 
-all: orion
+all: orion editor
 
-orion: $(OBJS)
-	$(CXX) $(CXXFLAGS) -o orion $(OBJS) $(LDFLAGS)
+orion: $(OBJS_ORION)
+	$(CXX) $(CXXFLAGS) -o orion $(OBJS_ORION) $(LDFLAGS)
+
+editor: $(OBJS_EDITOR)
+	$(CXX) $(CXXFLAGS) -o editor $(OBJS_EDITOR)
 
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $<
 
 clean:
-	rm -f *.o orion
+	rm -f *.o orion editor
 
