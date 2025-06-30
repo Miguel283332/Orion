@@ -70,13 +70,16 @@ int main() {
                         int maxCon = std::min(5, neuronasPorChunk - 1);
                         if (maxCon > 0) {
                             std::uniform_int_distribution<int> conCountDist(1, maxCon);
-                            std::uniform_int_distribution<int> conDist(1, neuronasPorChunk);
                             int numCon = conCountDist(rng); // numero variable de conexiones
+
                             for (int k = 0; k < numCon; ++k) {
+                                if (region.neuronas.empty()) break; // sin destinos disponibles
+
+                                std::uniform_int_distribution<size_t> idxDist(0, region.neuronas.size() - 1);
+                                size_t idx = idxDist(rng);
+
                                 Conexion cox;
-                                cox.destinoID = idGlobal - 1 - conDist(rng) % neuronasPorChunk;
-                                if (cox.destinoID < (idGlobal - neuronasPorChunk))
-                                    cox.destinoID = idGlobal - 1; // asegurarse de no ir atras demasiado
+                                cox.destinoID = region.neuronas[idx].id; // conexion a una neurona existente
                                 cox.tipoNT = static_cast<Neurotransmisor>(ntDist(rng));
                                 n.conexiones.push_back(cox);
                             }
