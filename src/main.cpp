@@ -262,10 +262,14 @@ static int cmdChat(Runtime& rt) {
     };
 
     Chat chat(*rt.model, rt.opt.seed + 7);
-    chat.restrictTo(rt.data);
     std::string lastUser, lastAnswer;
     {
+        // El hilo de evolución ya puede estar usando el modelo: tomar el bloqueo (la generación en
+        // curso se interrumpe y se revierte) antes de tocar modelo o corpus.
+        auto lk = acquire();
+        chat.restrictTo(rt.data);
         const float val = rt.learner->evalVal(rt.evolver->config().evalMax);
+        preempt = false;
         if (val > 0.8f * std::log(256.0f))
             std::cout << "\n[aviso] El modelo apenas ha aprendido (val=" << val << "; un modelo al azar da " << std::log(256.0f)
                       << ").\n        Sus respuestas serán ruido. Entrénalo primero:  orion train --steps 800\n";

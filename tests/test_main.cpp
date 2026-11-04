@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <random>
 
@@ -181,6 +182,33 @@ static void testDataset() {
     CHECK(d.count(Split::Val) >= valBefore, "la validación solo crece");
 }
 
+static void testPriorityMix() {
+    namespace fs = std::filesystem;
+    fs::path dir = fs::temp_directory_path() / "orion_test_prio";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    { std::ofstream(dir / "prosa.txt") << std::string(60000, 'a'); }
+    { std::ofstream(dir / "dialogos_x.txt") << std::string(20000, 'Z'); }
+    Dataset d;
+    d.addPath(dir.string());
+    CHECK(d.priorityCount() > 1000, "hay muestras prioritarias (%zu)", d.priorityCount());
+    d.setPriorityMix(0.3f);
+    std::mt19937_64 rng(1);
+    std::vector<int> ids, tgt;
+    int z = 0, n = 4000;
+    d.sample(Split::Train, n, 4, rng, ids, tgt);
+    for (int t : tgt) z += (t == 'Z');
+    double frac = (double)z / n;
+    // 'Z' aparece con prob. 0.3 (prioritario) + la parte natural de 0.7 * (Z/train) ~ 0.3 + 0.7*0.25
+    CHECK(frac > 0.40 && frac < 0.58, "mezcla prioritaria (fracción de diálogo %.3f)", frac);
+    d.setPriorityMix(0.0f);
+    z = 0;
+    d.sample(Split::Train, n, 4, rng, ids, tgt);
+    for (int t : tgt) z += (t == 'Z');
+    CHECK((double)z / n < 0.32, "sin mezcla la fracción es la natural (%.3f)", (double)z / n);
+    fs::remove_all(dir);
+}
+
 static void testChatMask(Backend& be) {
     // Un modelo SIN entrenar no debe emitir bytes que no existen en el corpus ni caracteres de control.
     Dataset d;
@@ -262,6 +290,7 @@ int main() {
     }
     std::printf("== checkpoint / dataset ==\n");
     testCheckpoint();
+    testPriorityMix();
     testChatMask(*bes[0].second);
     testDataset();
     std::printf("\n%d comprobaciones, %d fallos\n", g_run, g_fail);

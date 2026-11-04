@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <cctype>
 #include <fstream>
 #include <set>
 #include <stdexcept>
@@ -19,6 +20,12 @@ bool textual(const fs::path& p) {
 }
 }  // namespace
 
+bool Dataset::isPriorityFile(const std::string& path) {
+    std::string n = fs::path(path).stem().string();
+    for (char& ch : n) ch = (char)std::tolower((unsigned char)ch);
+    return n.rfind("dialog", 0) == 0 || n.rfind("aprendido", 0) == 0;
+}
+
 const std::vector<uint32_t>& Dataset::pos(Split s) const {
     return s == Split::Train ? train_ : s == Split::Val ? val_ : test_;
 }
@@ -29,7 +36,9 @@ void Dataset::appendBytes(const uint8_t* p, size_t n) {
         bytes_.push_back(p[i]);
         hist_[p[i]]++;
         const size_t c = (t / kChunk) % 20;
-        (c <= 1 ? val_ : c == 10 ? test_ : train_).push_back((uint32_t)t);
+        auto& dst = c <= 1 ? val_ : c == 10 ? test_ : train_;
+        dst.push_back((uint32_t)t);
+        if (curPriority_ && &dst == &train_) ptrain_.push_back((uint32_t)t);
     }
 }
 
@@ -87,7 +96,9 @@ bool Dataset::refresh() {
             const uint8_t nl = '\n';
             appendBytes(&nl, 1);
         }
+        curPriority_ = isPriorityFile(file);
         appendBytes(reinterpret_cast<const uint8_t*>(buf.data()), buf.size());
+        curPriority_ = false;
         done += buf.size();
         grew = grew || !buf.empty();
     }
@@ -102,13 +113,16 @@ void Dataset::fillCtx(size_t t, int ctx, int* out) const {
 }
 
 void Dataset::sample(Split s, int B, int ctx, std::mt19937_64& rng, std::vector<int>& ids, std::vector<int>& tgt) const {
-    const auto& P = pos(s);
-    if (P.empty()) throw std::runtime_error("corpus vacío para este split (hacen falta más datos)");
+    const auto& all = pos(s);
+    if (all.empty()) throw std::runtime_error("corpus vacío para este split (hacen falta más datos)");
     ids.resize((size_t)B * ctx);
     tgt.resize(B);
-    std::uniform_int_distribution<size_t> d(0, P.size() - 1);
+    const bool mix = s == Split::Train && !ptrain_.empty() && priorityMix_ > 0 && ptrain_.size() < all.size();
+    std::uniform_int_distribution<size_t> dAll(0, all.size() - 1);
+    std::uniform_real_distribution<float> u01(0.0f, 1.0f);
     for (int b = 0; b < B; ++b) {
-        const size_t t = P[d(rng)];
+        const std::vector<uint32_t>& P = (mix && u01(rng) < priorityMix_) ? ptrain_ : all;
+        const size_t t = P[P.size() == all.size() ? dAll(rng) : std::uniform_int_distribution<size_t>(0, P.size() - 1)(rng)];
         fillCtx(t, ctx, ids.data() + (size_t)b * ctx);
         tgt[b] = bytes_[t];
     }
