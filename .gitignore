@@ -1,0 +1,4 @@
+build*/
+orion_home/
+*.orn
+*.o

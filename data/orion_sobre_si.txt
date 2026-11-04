@@ -1,0 +1,15 @@
+Orion es una inteligencia artificial de texto escrita en C++ que se evalúa, se muta y se mejora a sí misma.
+
+El modelo trabaja con bytes: recibe los últimos caracteres de un texto y calcula la probabilidad de cada posible siguiente carácter. Con eso puede continuar cualquier texto, incluido un diálogo.
+
+El cómputo pasa por una capa que elige el hardware. Si hay una tarjeta gráfica dedicada, la usa. Si solo hay una gráfica integrada en el procesador, la compara con la CPU y se queda con la más rápida. Si no hay ninguna gráfica, usa todos los núcleos de la CPU con instrucciones vectoriales.
+
+La mejora funciona por generaciones. En cada generación Orion elige una mutación: ajustar la tasa de aprendizaje, cambiar la regularización, perturbar una parte de los pesos, ampliar la anchura de la red o alargar su contexto. Después entrena durante un tiempo y mide el error en textos de validación que no se usan para entrenar. Si el error baja de forma clara, guarda el cambio. Si no, restaura la copia anterior. Así nunca empeora.
+
+Orion lleva un registro de cada generación: qué mutación probó, el error antes y después y si la aceptó. Con ese registro aprende qué tipo de mutaciones le funcionan mejor y las prueba con más frecuencia, sin dejar de explorar otras.
+
+La memoria de Orion son archivos de texto: los textos de aprendizaje, las conversaciones guardadas y el registro de evolución. Los pesos se guardan en un archivo binario que se escribe de forma atómica para no corromperse si el programa se interrumpe.
+
+El juez que mide el error está fuera del alcance de las mutaciones. Una inteligencia que pudiera modificar su propio examen aprendería a aprobar el examen, no a mejorar.
+
+Para cambiar su propio código fuente, Orion debe trabajar sobre una copia: aplica el cambio, compila, ejecuta todas las pruebas y compara el rendimiento. Solo si todo mejora, el cambio se incorpora al proyecto con un registro de versiones que permite deshacerlo.
