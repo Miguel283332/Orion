@@ -30,6 +30,23 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
+### Windows (Visual Studio / MSVC)
+
+```powershell
+cmake -S . -B build
+cmake --build build --config Release -j 8
+ctest --test-dir build -C Release --output-on-failure
+.\build\Release\orion.exe chat --auto
+```
+
+- Compila siempre en **Release**: en Debug el entrenamiento es mucho más lento. En VS Code,
+  `CMake: Select Variant` → Release.
+- Con el generador de Visual Studio los ejecutables quedan en `build\Release\`.
+- MSVC solo trae OpenMP 2.0, así que allí la CPU usa hilos y deja la vectorización al compilador.
+- Para la GPU instala el SDK/driver de OpenCL de tu fabricante (con vcpkg: `vcpkg install opencl`).
+- `tools/try_patch.sh` y `tools/fetch_corpus.sh` son scripts bash: úsalos desde Git Bash o WSL.
+- Probado con GCC en Linux; MSVC se ha portado pero no he podido ejecutarlo en CI.
+
 Opciones de CMake: `-DORION_OPENCL=ON|OFF` (GPU), `-DORION_OPENMP=ON|OFF`,
 `-DORION_NATIVE=ON|OFF` (`-march=native`; ponlo a OFF para un binario portable),
 `-DORION_BUILD_TESTS=ON|OFF`. Para la GPU necesitas OpenCL (`ocl-icd-opencl-dev` +

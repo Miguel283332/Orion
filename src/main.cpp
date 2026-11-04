@@ -10,6 +10,10 @@
 #include <sstream>
 #include <thread>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include "orion/backend.hpp"
 #include "orion/chat.hpp"
 #include "orion/dataset.hpp"
@@ -333,6 +337,11 @@ static int cmdBench(Runtime& rt) {
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // El corpus y el modelo son UTF-8: que la consola de Windows entre y salga en UTF-8.
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
     Runtime rt;
     rt.opt = parse(argc, argv);
     std::signal(SIGINT, onSignal);
