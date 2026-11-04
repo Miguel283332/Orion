@@ -5,6 +5,12 @@
 
 namespace orion {
 
+void Chat::restrictTo(const Dataset& d) {
+    allowed_.assign(256, 0);
+    for (int b = 1; b < 256; ++b)
+        allowed_[b] = d.hasByte(b) && (b >= 32 || b == '\n' || b == '\t') && b != 127;
+}
+
 int Chat::sampleByte(const std::vector<float>& logits) {
     const int V = (int)logits.size();
     std::vector<int> idx(V);
@@ -26,6 +32,9 @@ std::string Chat::continueText(const std::string& prompt, bool stopAtNewline) {
     for (int i = 0; i < cfg_.maxBytes; ++i) {
         model_.logits(Dataset::contextOf(text, model_.genome().ctx), lg);
         lg[0] = -1e9f;  // el byte 0 es relleno, nunca se emite
+        if (!allowed_.empty())
+            for (size_t k = 0; k < lg.size() && k < allowed_.size(); ++k)
+                if (!allowed_[k]) lg[k] = -1e9f;
         const int b = sampleByte(lg);
         const char c = (char)b;
         if (stopAtNewline && c == '\n') break;

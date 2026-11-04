@@ -134,6 +134,11 @@ static void seedHome(const std::string& home) {
 
 static bool boot(Runtime& rt, bool quiet = false) {
     Options& o = rt.opt;
+#ifndef NDEBUG
+    if (!quiet)
+        std::cerr << "[aviso] Esta es una compilación Debug (sin optimizar): va unas 25 veces más lenta.\n"
+                     "        Compila en Release: cmake --build build --config Release\n";
+#endif
     seedHome(o.home);
     rt.backend = selectBackend(o.device, &rt.deviceReport);
     if (!quiet) std::cout << "[dispositivo]\n" << rt.deviceReport;
@@ -209,7 +214,8 @@ static int cmdEvolve(Runtime& rt) {
         GenResult r = rt.evolver->step({}, &g_stop);
         if (!r.aborted) printGen(r);
     }
-    rt.evolver->saveCheckpoint();
+    // (cada generación aceptada ya guardó su checkpoint; no se guarda nada más para no
+    //  fijar como "mejor" un estado que no ha mejorado)
     printStats(rt);
     return 0;
 }
@@ -256,7 +262,16 @@ static int cmdChat(Runtime& rt) {
     };
 
     Chat chat(*rt.model, rt.opt.seed + 7);
+    chat.restrictTo(rt.data);
     std::string lastUser, lastAnswer;
+    {
+        const float val = rt.learner->evalVal(rt.evolver->config().evalMax);
+        if (val > 0.8f * std::log(256.0f))
+            std::cout << "\n[aviso] El modelo apenas ha aprendido (val=" << val << "; un modelo al azar da " << std::log(256.0f)
+                      << ").\n        Sus respuestas serán ruido. Entrénalo primero:  orion train --steps 800\n";
+        else
+            std::cout << "\n[modelo] val=" << val << " (perplejidad " << std::exp(val) << " por byte)\n";
+    }
     std::cout << "\nOrion listo. Escribe un mensaje o /help.\n";
     std::string line;
     while (!g_stop) {
@@ -309,6 +324,7 @@ static int cmdChat(Runtime& rt) {
         std::string answer;
         {
             auto lk = acquire();
+            chat.restrictTo(rt.data);  // el corpus pudo crecer (/ingest, /teach)
             answer = chat.reply(line);
             preempt = false;
         }
@@ -319,8 +335,7 @@ static int cmdChat(Runtime& rt) {
     }
     bgStop = true;
     preempt = true;
-    bg.join();
-    rt.evolver->saveCheckpoint();
+    bg.join();  // las generaciones aceptadas ya guardaron su checkpoint
     return 0;
 }
 
@@ -359,6 +374,7 @@ int main(int argc, char** argv) {
         if (rt.opt.command == "info") { printStats(rt); return 0; }
         if (rt.opt.command == "gen") {
             Chat chat(*rt.model, rt.opt.seed);
+            chat.restrictTo(rt.data);
             std::string prompt = rt.opt.args.empty() ? "Usuario: hola\nOrion:" : rt.opt.args[0];
             std::cout << prompt << chat.continueText(prompt, false) << "\n";
             return 0;

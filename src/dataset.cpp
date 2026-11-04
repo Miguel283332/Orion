@@ -27,6 +27,7 @@ void Dataset::appendBytes(const uint8_t* p, size_t n) {
     for (size_t i = 0; i < n; ++i) {
         const size_t t = bytes_.size();
         bytes_.push_back(p[i]);
+        hist_[p[i]]++;
         const size_t c = (t / kChunk) % 20;
         (c <= 1 ? val_ : c == 10 ? test_ : train_).push_back((uint32_t)t);
     }
