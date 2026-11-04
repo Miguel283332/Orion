@@ -69,7 +69,14 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(orion_core PUBLIC -Wno-deprecated-declarations -Wno-ignored-attributes)
   endif()
 elseif(MSVC)
-  target_compile_options(orion_core PUBLIC /W3 /O2 /fp:fast)
+  # La optimización la decide el tipo de build (Release=/O2, Debug=/Od /RTC1): no forzar /O2 aquí.
+  target_compile_options(orion_core PUBLIC /W3 /utf-8 /fp:fast)
+  if(ORION_NATIVE AND NOT CMAKE_CROSSCOMPILING)
+    target_compile_options(orion_core PUBLIC /arch:AVX2)  # CPUs desde ~2013; desactiva ORION_NATIVE si no
+  endif()
+endif()
+if(WIN32)
+  target_compile_definitions(orion_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
 endif()
 
 # ------------------------------------------------------------------ ejecutables

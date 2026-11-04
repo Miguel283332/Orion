@@ -11,6 +11,33 @@
 #include <omp.h>
 #endif
 
+// MSVC solo implementa OpenMP 2.0 (sin `simd`): allí se usan solo `parallel for`/`reduction` y se deja
+// la vectorización al compilador (/fp:fast). Con ORION_OMP2 se fuerza ese modo en cualquier compilador.
+#if defined(_MSC_VER) && !defined(__clang__)
+#define ORION_PRAGMA(x) __pragma(x)
+#define ORION_OMP_HAS_SIMD 0
+#else
+#define ORION_PRAGMA(x) _Pragma(#x)
+#ifdef ORION_OMP2
+#define ORION_OMP_HAS_SIMD 0
+#else
+#define ORION_OMP_HAS_SIMD 1
+#endif
+#endif
+
+#if ORION_OMP_HAS_SIMD
+#define ORION_OMP_SIMD ORION_PRAGMA(omp simd)
+#define ORION_OMP_SIMD_RED(...) ORION_PRAGMA(omp simd reduction(+ : __VA_ARGS__))
+#define ORION_OMP_PARFOR_SIMD(cond) ORION_PRAGMA(omp parallel for simd schedule(static) if (cond))
+#define ORION_OMP_PARFOR_RED(var, cond) ORION_PRAGMA(omp parallel for simd reduction(+ : var) schedule(static) if (cond))
+#else
+#define ORION_OMP_SIMD
+#define ORION_OMP_SIMD_RED(...)
+#define ORION_OMP_PARFOR_SIMD(cond) ORION_PRAGMA(omp parallel for schedule(static) if (cond))
+#define ORION_OMP_PARFOR_RED(var, cond) ORION_PRAGMA(omp parallel for reduction(+ : var) schedule(static) if (cond))
+#endif
+#define ORION_OMP_PARFOR(cond) ORION_PRAGMA(omp parallel for schedule(static) if (cond))
+
 namespace orion {
 namespace {
 
@@ -34,7 +61,7 @@ inline const int* I(const Buffer& b) { return reinterpret_cast<const int*>(P(b))
 void gemmKN(bool tA, int M, int N, int K, float alpha, const float* __restrict a,
             const float* __restrict b, float beta, float* __restrict c) {
     const int MB = 4;
-#pragma omp parallel for schedule(static)
+ORION_OMP_PARFOR(1)
     for (int i0 = 0; i0 < M; i0 += MB) {
         const int mb = std::min(MB, M - i0);
         for (int r = 0; r < mb; ++r) {
@@ -62,7 +89,7 @@ void gemmKN(bool tA, int M, int N, int K, float alpha, const float* __restrict a
                     a3 = alpha * a[(size_t)(i0 + 3) * K + k];
                 }
                 const float* __restrict bk = b + (size_t)k * N;
-#pragma omp simd
+ORION_OMP_SIMD
                 for (int j = 0; j < N; ++j) {
                     const float bv = bk[j];
                     c0[j] += a0 * bv; c1[j] += a1 * bv; c2[j] += a2 * bv; c3[j] += a3 * bv;
@@ -75,7 +102,7 @@ void gemmKN(bool tA, int M, int N, int K, float alpha, const float* __restrict a
                 for (int k = 0; k < K; ++k) {
                     const float av = alpha * (tA ? a[(size_t)k * M + i] : a[(size_t)i * K + k]);
                     const float* __restrict bk = b + (size_t)k * N;
-#pragma omp simd
+ORION_OMP_SIMD
                     for (int j = 0; j < N; ++j) cr[j] += av * bk[j];
                 }
             }
@@ -87,7 +114,7 @@ void gemmKN(bool tA, int M, int N, int K, float alpha, const float* __restrict a
 void gemmNT(int M, int N, int K, float alpha, const float* __restrict a, const float* __restrict b,
             float beta, float* __restrict c) {
     const int MB = 4;
-#pragma omp parallel for schedule(static)
+ORION_OMP_PARFOR(1)
     for (int i0 = 0; i0 < M; i0 += MB) {
         const int mb = std::min(MB, M - i0);
         if (mb == MB) {
@@ -98,7 +125,7 @@ void gemmNT(int M, int N, int K, float alpha, const float* __restrict a, const f
             for (int j = 0; j < N; ++j) {
                 const float* __restrict br = b + (size_t)j * K;
                 float s0 = 0, s1 = 0, s2 = 0, s3 = 0;
-#pragma omp simd reduction(+ : s0, s1, s2, s3)
+ORION_OMP_SIMD_RED(s0, s1, s2, s3)
                 for (int k = 0; k < K; ++k) {
                     const float bv = br[k];
                     s0 += a0[k] * bv; s1 += a1[k] * bv; s2 += a2[k] * bv; s3 += a3[k] * bv;
@@ -115,7 +142,7 @@ void gemmNT(int M, int N, int K, float alpha, const float* __restrict a, const f
                 for (int j = 0; j < N; ++j) {
                     const float* __restrict br = b + (size_t)j * K;
                     float s = 0;
-#pragma omp simd reduction(+ : s)
+ORION_OMP_SIMD_RED(s)
                     for (int k = 0; k < K; ++k) s += ar[k] * br[k];
                     float& cc = c[(size_t)(i0 + r) * N + j];
                     cc = alpha * s + (beta == 0.0f ? 0.0f : beta * cc);
@@ -155,7 +182,7 @@ public:
     void axpy(float a, Span x, Span y, size_t n) override {
         const float* __restrict xp = P(x);
         float* __restrict yp = P(y);
-#pragma omp parallel for simd schedule(static) if (n > 65536)
+ORION_OMP_PARFOR_SIMD(n > 65536)
         for (long long i = 0; i < (long long)n; ++i) yp[i] += a * xp[i];
     }
     void gemm(bool tA, bool tB, int M, int N, int K, float alpha, Span A, Span B, float beta,
@@ -179,21 +206,21 @@ public:
         const float* t = P(table);
         float* o = P(out);
         const int* id = I(ids);
-#pragma omp parallel for schedule(static) if (count > 256)
+ORION_OMP_PARFOR(count > 256)
         for (int i = 0; i < count; ++i)
             std::memcpy(o + (size_t)i * dim, t + (size_t)id[i] * dim, sizeof(float) * dim);
     }
     void biasAct(Span z, Span bias, int rows, int cols, bool relu) override {
         float* zp = P(z);
         const float* bp = P(bias);
-#pragma omp parallel for schedule(static) if ((size_t)rows * cols > 32768)
+ORION_OMP_PARFOR((size_t)rows * cols > 32768)
         for (int r = 0; r < rows; ++r) {
             float* row = zp + (size_t)r * cols;
             if (relu) {
-#pragma omp simd
+ORION_OMP_SIMD
                 for (int c = 0; c < cols; ++c) { const float v = row[c] + bp[c]; row[c] = v > 0 ? v : 0; }
             } else {
-#pragma omp simd
+ORION_OMP_SIMD
                 for (int c = 0; c < cols; ++c) row[c] += bp[c];
             }
         }
@@ -201,7 +228,7 @@ public:
     void reluGrad(Span g, Span act, size_t n) override {
         float* gp = P(g);
         const float* ap = P(act);
-#pragma omp parallel for simd schedule(static) if (n > 65536)
+ORION_OMP_PARFOR_SIMD(n > 65536)
         for (long long i = 0; i < (long long)n; ++i) if (ap[i] <= 0) gp[i] = 0;
     }
     void colSum(Span g, Span out, int rows, int cols) override {
@@ -210,7 +237,7 @@ public:
         std::memset(op, 0, sizeof(float) * cols);
         for (int r = 0; r < rows; ++r) {
             const float* row = gp + (size_t)r * cols;
-#pragma omp simd
+ORION_OMP_SIMD
             for (int c = 0; c < cols; ++c) op[c] += row[c];
         }
     }
@@ -220,7 +247,7 @@ public:
         const int* tp = I(targets);
         float* dp = wantGrad ? P(dlogits) : nullptr;
         float* lo = P(loss);
-#pragma omp parallel for schedule(static) if (rows > 16)
+ORION_OMP_PARFOR(rows > 16)
         for (int r = 0; r < rows; ++r) {
             const float* row = lp + (size_t)r * cols;
             float mx = row[0];
@@ -251,7 +278,7 @@ public:
     float sumSq(Span x, size_t n) override {
         const float* p = P(x);
         double s = 0;
-#pragma omp parallel for simd reduction(+ : s) schedule(static) if (n > 65536)
+ORION_OMP_PARFOR_RED(s, n > 65536)
         for (long long i = 0; i < (long long)n; ++i) s += (double)p[i] * p[i];
         return (float)s;
     }
@@ -260,7 +287,7 @@ public:
         float* pp = P(p); const float* gp = P(g); float* mp = P(m); float* vp = P(v);
         const float c1 = 1.0f / (1.0f - std::pow(b1, (float)t));
         const float c2 = 1.0f / (1.0f - std::pow(b2, (float)t));
-#pragma omp parallel for simd schedule(static) if (n > 65536)
+ORION_OMP_PARFOR_SIMD(n > 65536)
         for (long long i = 0; i < (long long)n; ++i) {
             const float gr = gp[i] * gscale;
             const float mm = b1 * mp[i] + (1.0f - b1) * gr;

@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <random>
 #include <stdexcept>
@@ -118,7 +119,9 @@ void saveState(const State& s, const std::string& path) {
         out.write(reinterpret_cast<const char*>(s.v.data()), n * sizeof(float));
         if (!out) throw std::runtime_error("error escribiendo " + tmp);
     }
-    if (std::rename(tmp.c_str(), path.c_str()) != 0) throw std::runtime_error("no se puede renombrar " + tmp);
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);  // reemplaza el destino también en Windows
+    if (ec) throw std::runtime_error("no se puede renombrar " + tmp + ": " + ec.message());
 }
 
 bool loadState(State& s, const std::string& path) {
