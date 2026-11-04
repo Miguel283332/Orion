@@ -2,6 +2,7 @@
 #pragma once
 #include <random>
 #include <string>
+#include <vector>
 
 #include "orion/dataset.hpp"
 #include "orion/model.hpp"
@@ -22,6 +23,8 @@ public:
     std::string continueText(const std::string& prompt, bool stopAtNewline = true);
     // Formato de diálogo del corpus: "Usuario: ...\nOrion: ...\n"
     std::string reply(const std::string& user);
+    // Limita el muestreo a los bytes que aparecen en el corpus (sin controles salvo \n y \t).
+    void restrictTo(const Dataset& d);
     void reset() { history_.clear(); }
     const std::string& history() const { return history_; }
 
@@ -31,6 +34,7 @@ private:
     std::mt19937_64 rng_;
     SampleConfig cfg_;
     std::string history_;
+    std::vector<char> allowed_;  // vacío = sin restricción
 };
 
 }  // namespace orion

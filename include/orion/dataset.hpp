@@ -31,6 +31,7 @@ public:
     size_t size() const { return bytes_.size(); }
     size_t count(Split s) const { return pos(s).size(); }
     const std::vector<uint8_t>& bytes() const { return bytes_; }
+    bool hasByte(int b) const { return hist_[b & 255] > 0; }  // ¿aparece este byte en el corpus?
 
     void sample(Split s, int B, int ctx, std::mt19937_64& rng, std::vector<int>& ids, std::vector<int>& tgt) const;
     // Conjunto de evaluación determinista (como mucho maxN posiciones repartidas por todo el split).
@@ -44,6 +45,7 @@ private:
     void fillCtx(size_t t, int ctx, int* out) const;
 
     std::vector<uint8_t> bytes_;
+    uint64_t hist_[256] = {};
     std::vector<uint32_t> train_, val_, test_;
     std::map<std::string, uint64_t> consumed_;  // archivo -> bytes ya leídos
 };

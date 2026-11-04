@@ -181,6 +181,25 @@ static void testDataset() {
     CHECK(d.count(Split::Val) >= valBefore, "la validación solo crece");
 }
 
+static void testChatMask(Backend& be) {
+    // Un modelo SIN entrenar no debe emitir bytes que no existen en el corpus ni caracteres de control.
+    Dataset d;
+    std::string big;
+    for (int i = 0; i < 60; ++i) big += kText;
+    d.addText(big);
+    Genome g; g.dim = 8; g.ctx = 8; g.hidden = 32;
+    Model m(be, freshState(g, HyperParams{}, 3));
+    Chat chat(m, 1);
+    chat.restrictTo(d);
+    chat.config().maxBytes = 300;
+    chat.config().topK = 256;
+    chat.config().temperature = 1.0f;
+    std::string out = chat.continueText("Usuario: hola\nOrion:", false);
+    bool ok = !out.empty();
+    for (unsigned char c : out) ok = ok && d.hasByte(c) && (c >= 32 || c == '\n' || c == '\t');
+    CHECK(ok, "el muestreo respeta el corpus (sin bytes inventados)");
+}
+
 static void testLearning(Backend& be, const char* label) {
     // Texto repetitivo: el modelo debe aprender claramente (pérdida << ln(256)=5.55).
     Dataset d;
@@ -243,6 +262,7 @@ int main() {
     }
     std::printf("== checkpoint / dataset ==\n");
     testCheckpoint();
+    testChatMask(*bes[0].second);
     testDataset();
     std::printf("\n%d comprobaciones, %d fallos\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;
