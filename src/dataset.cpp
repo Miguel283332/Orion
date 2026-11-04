@@ -48,7 +48,7 @@ size_t Dataset::addPath(const std::string& path, bool recursive) {
         if (recursive) {
             for (auto it = fs::recursive_directory_iterator(path, ec); !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
                 const auto& pth = it->path();
-                if (pth.string().find("/.git") != std::string::npos || pth.string().find("/build") != std::string::npos) continue;
+                if (pth.string().find("/.git") != std::string::npos || pth.string().find("/build") != std::string::npos || pth.string().find("/orion_home") != std::string::npos) continue;
                 if (it->is_regular_file() && textual(pth)) files.push_back(pth);
             }
         } else {

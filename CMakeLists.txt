@@ -24,6 +24,9 @@ if(ORION_OPENMP)
     message(STATUS "OpenMP no encontrado: la CPU usará un solo hilo")
   endif()
 endif()
+if(NOT OpenMP_CXX_FOUND)
+  set(ORION_NO_OMP_FLAGS -Wno-unknown-pragmas)
+endif()
 
 set(ORION_HAS_OPENCL OFF)
 if(ORION_OPENCL)
@@ -54,7 +57,7 @@ target_compile_definitions(orion_core PUBLIC
   $<$<BOOL:${ORION_HAS_OPENCL}>:CL_TARGET_OPENCL_VERSION=120>)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(orion_core PUBLIC -Wall -Wextra -Wno-unused-parameter -fno-math-errno)
+  target_compile_options(orion_core PUBLIC -Wall -Wextra -Wno-unused-parameter -fno-math-errno ${ORION_NO_OMP_FLAGS})
   if(ORION_NATIVE AND NOT CMAKE_CROSSCOMPILING)
     target_compile_options(orion_core PUBLIC -march=native)
   endif()

@@ -128,11 +128,11 @@ void gemmNT(int M, int N, int K, float alpha, const float* __restrict a, const f
 class CpuBackend final : public Backend {
 public:
     std::string name() const override {
-        int threads = 1;
 #ifdef _OPENMP
-        threads = omp_get_max_threads();
+        return "CPU nativa (" + std::to_string(omp_get_max_threads()) + " hilos, OpenMP+SIMD)";
+#else
+        return "CPU nativa (1 hilo, sin OpenMP)";
 #endif
-        return "CPU nativa (" + std::to_string(threads) + " hilos, OpenMP+SIMD)";
     }
     std::string kind() const override { return "cpu"; }
 
