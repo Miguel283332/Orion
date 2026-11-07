@@ -783,6 +783,14 @@ class Memory:
         scored.sort(key=lambda x: -x[0])
         return scored[:k]
 
+    def update_meta(self, mid: str, **fields: Any) -> None:
+        """Actualiza campos extra de una entrada (contadores de uso, etc.) sin tocar su texto."""
+        it = self.items.get(mid)
+        if it is None:
+            return
+        it.update(fields)
+        self._append(self.sem_path, it)
+
     def forget(self, mid: str) -> bool:
         if mid not in self.items:
             return False
@@ -1211,10 +1219,20 @@ RULES
 5. Sensitive tools (shell, upload, self_patch) may need human approval. If denied, choose another approach or use ask_user.
 6. Never invent results: verify with tools. After 2 failed attempts change approach, or call `done` explaining what blocked you.
 7. Be concise. Do not repeat an action that already succeeded.
+8. Greetings, thanks, or anything you can answer from your own knowledge: call `done` IMMEDIATELY in step 1. Do not use tools needlessly.
+9. Follow the LEARNED RULES: they come from your own past mistakes.
 
 TOOLS
 {tools}
 """
+
+
+SEED_RULES = [
+    "Si el usuario solo saluda, da las gracias o hace una pregunta que puedo responder sin herramientas, respondo directamente con done(summary=...) en el primer paso. No busco en la web.",
+    "Si repito una acción y no avanza, cambio de enfoque o termino con done explicando lo que sé. Nunca repito la misma búsqueda más de dos veces.",
+    "Cuando me queden pocos pasos, respondo con lo que ya sé en lugar de seguir buscando.",
+]
+WEB_TOOLS = ("web_search", "web_get", "fs_list", "recall")
 
 
 class Agent:
@@ -1236,6 +1254,9 @@ class Agent:
         self.gate = SelfGate(SELF_PATH, self.home / "versions", policy, audit)
         self.tools = build_tools(self)
         self.stop_path = self.home / "STOP"
+        self.practice_path = self.home / "practice.json"
+        self._cycle_rules: List[dict] = []
+        self._seed_rules()
 
     # --- humano
     def ask_human(self, question: str) -> str:
@@ -1257,11 +1278,25 @@ class Agent:
         lines = [f"- {t.name}({t.params}): {t.doc}" for t in self.tools.values()]
         return SYSTEM_PROMPT.format(tools="\n".join(lines))
 
+    def _seed_rules(self) -> None:
+        if any(it["kind"] == "rule" for it in self.memory.items.values()):
+            return
+        for t in SEED_RULES:
+            self.memory.add(t, kind="rule", tags=["rule", "seed"])
+
+    def rules_for_prompt(self, n: int = 6) -> List[dict]:
+        """Las reglas que mejor resultado han dado (y las más recientes): siempre visibles en el prompt."""
+        rules = [it for it in self.memory.items.values() if it["kind"] == "rule"]
+        rules.sort(key=lambda it: ((it.get("wins", 0) + 1) / (it.get("uses", 0) + 2), it["ts"]), reverse=True)
+        return rules[:n]
+
     def build_user_prompt(self, goal: str, steps: List[dict], extra: str = "", note: str = "") -> str:
         mem_hits = self.memory.search(goal + " " + (steps[-1]["obs"][:200] if steps else ""), k=5)
         mems = "\n".join(f"- [{it['kind']}#{it['id']}] {clip(it['text'], 300)}" for s, it in mem_hits if s > 0.05) or "(nada relevante)"
         core = self.memory.core_get().strip() or "(vacía: usa core_set para escribir lo esencial sobre ti y tu entorno)"
-        head = (f"## GOAL\n{goal}\n\n## CORE MEMORY (siempre visible; editable)\n{core}\n\n"
+        rules = "\n".join(f"- {r['text']}" for r in self._cycle_rules) or "(aún ninguna)"
+        head = (f"## GOAL\n{goal}\n\n## LEARNED RULES (from my own past mistakes; follow them)\n{rules}\n\n"
+                f"## CORE MEMORY (siempre visible; editable)\n{core}\n\n"
                 f"## RELEVANT MEMORIES\n{mems}\n")
         if extra:
             head += f"\n## CONTEXT\n{extra}\n"
@@ -1284,38 +1319,54 @@ class Agent:
         cycle = time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
         self.policy.new_cycle()
         max_steps = max_steps or self.max_steps
+        self._cycle_rules = self.rules_for_prompt()
         steps: List[dict] = []
         record: List[dict] = []   # (messages, respuesta) para consolidar en pesos más adelante
-        result, finished, strikes, note = "", False, 0, ""
+        result, finished, strikes, pending = "", False, 0, ""
+        end_reason: Optional[str] = None
+        counts: Dict[str, int] = {}
         sysmsg = self.system_prompt()
         say(f"\n=== objetivo [{cycle}]: {clip(goal, 200)}")
         for n in range(1, max_steps + 1):
             if self.stop_requested():
-                result = "(detenido: existe el archivo STOP)"
+                result, end_reason = "(detenido: existe el archivo STOP)", "stop"
                 break
+            notes = [pending] if pending else []
+            pending = ""
+            left = max_steps - n + 1
+            if left <= 2 and max_steps > 3:
+                notes.append(f"Te quedan {left} paso(s). Responde YA con done usando lo que sepas; no empieces búsquedas nuevas.")
             messages = [{"role": "system", "content": sysmsg},
-                        {"role": "user", "content": self.build_user_prompt(goal, steps, extra, note)}]
-            note = ""
+                        {"role": "user", "content": self.build_user_prompt(goal, steps, extra, " ".join(notes))}]
             try:
                 raw = self.llm.chat(messages)
             except LLMError as e:
-                result = f"(error del modelo: {e})"
+                result, end_reason = f"(error del modelo: {e})", "model_error"
                 say("  " + result)
                 break
             action, err = parse_action(raw)
             if action is None:
                 strikes += 1
-                note = f"Tu respuesta anterior fue inválida: {err}. Responde SOLO con el objeto JSON."
+                pending = f"Tu respuesta anterior fue inválida: {err}. Responde SOLO con el objeto JSON."
                 if strikes >= 3:
-                    result = "(el modelo no produjo acciones válidas)"
+                    result, end_reason = "(el modelo no produjo acciones válidas)", "invalid"
                     break
                 continue
             tool, args = action["tool"], action["args"]
-            if len(steps) >= 3 and all(s["tool"] == tool and s["args"] == args for s in steps[-3:]):
-                note = "Estás repitiendo exactamente la misma acción. Cambia de enfoque o termina con done."
-                if len(steps) >= 5 and all(s["tool"] == tool and s["args"] == args for s in steps[-5:]):
-                    result = "(bucle detectado: misma acción repetida)"
+            key = json.dumps([tool, args], sort_keys=True, ensure_ascii=False)
+            counts[key] = counts.get(key, 0) + 1
+            streak = 1
+            for prev in reversed(steps):
+                if prev["tool"] != tool:
                     break
+                streak += 1
+            if counts[key] >= 4 or (tool in WEB_TOOLS and streak >= 7):
+                result, end_reason = "(bucle detectado: repites la misma acción sin avanzar)", "loop"
+                break
+            if counts[key] == 3:
+                pending = "Ya has hecho exactamente esta acción 2 veces sin avanzar. Cambia de enfoque o termina con done."
+            elif tool in WEB_TOOLS and streak >= 4:
+                pending = f"Llevas {streak} usos seguidos de {tool}. Si ya tienes lo necesario, responde con done."
             ok, obs = guarded_call(self.policy, self.audit, self.tools, tool, args)
             steps.append({"n": n, "tool": tool, "args": args, "obs": obs, "ok": ok})
             record.append({"messages": messages, "response": json.dumps(action, ensure_ascii=False), "ok": ok})
@@ -1326,19 +1377,138 @@ class Agent:
                 result, finished = obs, True
                 break
             if self.gate.restart_requested:
-                result = "(código propio actualizado; reiniciando)"
+                result, end_reason = "(código propio actualizado; reiniciando)", "restart"
                 break
-        else:
-            result = "(se agotó el presupuesto de pasos)"
-        info: Dict[str, Any] = {"cycle": cycle, "goal": goal, "result": result, "finished": finished,
-                                "steps": len(steps), "success": finished, "score": 1.0 if finished else 0.0, "lessons": []}
+        if not finished and end_reason is None:
+            result, end_reason = "(se agotó el presupuesto de pasos)", "budget"
+        info: Dict[str, Any] = {"cycle": cycle, "goal": goal, "result": result, "finished": finished, "end_reason": end_reason,
+                                "steps": len(steps), "success": finished, "score": 1.0 if finished else 0.0, "lessons": [], "learned": []}
+        # si no llegó a responder, el usuario recibe igualmente una respuesta (y el fallo queda registrado)
+        if not finished and end_reason in ("budget", "loop", "invalid"):
+            fb = self.final_answer(goal, steps)
+            if fb:
+                info["result"] = fb
+                say("  [respuesta de emergencia] " + clip(fb, 160))
         if reflect and steps:
             try:
                 info.update(self.reflect(goal, steps, result, finished, cycle))
             except Exception as e:  # noqa: BLE001
                 info["reflect_error"] = str(e)
+        # APRENDER del resultado, siempre: autopsia de los fallos y balance de las reglas usadas
+        try:
+            if not info["success"] and end_reason in ("budget", "loop", "invalid"):
+                info["learned"] = self.postmortem(goal, steps, end_reason, cycle)
+                self.practice_add(goal)
+            elif info["success"]:
+                self.practice_mark(goal, solved=True)
+            self.rule_feedback(bool(info["success"]))
+        except Exception as e:  # noqa: BLE001
+            info["learn_error"] = str(e)
         self._save_trajectory(cycle, goal, record, info)
         return info
+
+    # --- aprender de los errores (determinista: no depende de que el modelo se dé cuenta)
+    def final_answer(self, goal: str, steps: List[dict]) -> str:
+        trace = "\n".join(f"{s['tool']} -> {clip(s['obs'], 200)}" for s in steps[-6:])
+        try:
+            out = self.llm.chat([{"role": "system", "content": "You are Orion's final-answer module. Answer the user briefly, in Spanish, with what you know. Do not call tools."},
+                                 {"role": "user", "content": f"GOAL: {goal}\nWHAT I DID:\n{trace or '(nada)'}\nWrite the final answer for the user."}],
+                                json_mode=False, num_predict=250, temperature=0.4)
+        except LLMError:
+            return ""
+        return out.strip()
+
+    def postmortem(self, goal: str, steps: List[dict], reason: str, cycle: str) -> List[str]:
+        tools = [s["tool"] for s in steps]
+        dom = max(set(tools), key=tools.count) if tools else None
+        n = tools.count(dom) if dom else 0
+        user_msg = re.sub(r"^El usuario dice:\s*", "", goal.split("\n")[0]).strip()
+        trivial = goal.startswith("El usuario dice:") and len(user_msg) <= 30
+        denied = sum(1 for s in steps if s["obs"].startswith("DENEGADO"))
+        if trivial and dom is not None and dom != "done":
+            advice = "Si el usuario solo saluda, da las gracias o dice algo breve, respondo directamente con done(summary=...) en el primer paso, sin usar herramientas."
+        elif dom in ("web_search", "web_get") and n >= 3:
+            advice = "No repito búsquedas: si dos búsquedas no dan nada útil, respondo con lo que sé usando done."
+        elif denied >= 2:
+            advice = "Si una herramienta me la deniegan, no insisto: uso otra vía o pregunto con ask_user."
+        elif reason == "invalid":
+            advice = "Respondo SOLO con el objeto JSON {thought, tool, args}, sin texto alrededor."
+        elif reason == "loop":
+            advice = "Si noto que repito acciones sin avanzar, cambio de enfoque o cierro con done explicando lo que tengo."
+        else:
+            advice = "Antes de agotar los pasos, resumo lo que sé y cierro con done."
+        lesson = (f"Fallo ({reason}) en «{clip(user_msg or goal, 70)}»: {n}× {dom or 'ninguna acción'} en {len(steps)} pasos "
+                  f"sin llegar a done. Lección: {advice}")
+        self.memory.add(lesson, kind="lesson", tags=["fail", reason, f"cycle:{cycle}"], dedup=False)
+        rid = self.memory.add(advice, kind="rule", tags=["rule", "learned", reason])
+        it = self.memory.items.get(rid)
+        if it is not None:
+            self.memory.update_meta(rid, seen=int(it.get("seen", 1)) + 1)
+        say(f"  [aprendí] {advice}")
+        return [advice]
+
+    def rule_feedback(self, success: bool) -> None:
+        """Cada regla mostrada cuenta un uso; si el ciclo salió bien, también una victoria. Se podan las que no ayudan."""
+        for r in self._cycle_rules:
+            it = self.memory.items.get(r["id"])
+            if it is None:
+                continue
+            uses, wins = int(it.get("uses", 0)) + 1, int(it.get("wins", 0)) + (1 if success else 0)
+            if uses >= 8 and wins / uses < 0.25 and "seed" not in it.get("tags", []):
+                self.memory.forget(it["id"])
+                say(f"  [poda] regla descartada por no ayudar: {clip(it['text'], 80)}")
+            else:
+                self.memory.update_meta(it["id"], uses=uses, wins=wins)
+
+    # --- práctica deliberada: reintentar lo que falló con las reglas nuevas
+    def _practice(self) -> List[dict]:
+        try:
+            return json.loads(self.practice_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+
+    def _practice_save(self, items: List[dict]) -> None:
+        self.practice_path.write_text(json.dumps(items, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    def practice_add(self, goal: str) -> None:
+        items = self._practice()
+        for it in items:
+            if it["goal"] == goal:
+                it["solved"] = False
+                break
+        else:
+            items.append({"goal": goal, "attempts": 0, "solved": False, "ts": now()})
+        self._practice_save(items[-50:])
+
+    def practice_mark(self, goal: str, solved: bool) -> None:
+        items = self._practice()
+        for it in items:
+            if it["goal"] == goal:
+                it["solved"] = solved
+                it["attempts"] = int(it.get("attempts", 0)) + 1
+        self._practice_save(items)
+
+    def practice_next(self) -> Optional[str]:
+        for it in self._practice():
+            if not it.get("solved") and int(it.get("attempts", 0)) < 3:
+                return it["goal"]
+        return None
+
+    def distill_rules(self) -> List[str]:
+        """Resume los fallos acumulados en reglas generales (usa el modelo; las reglas se podan si no ayudan)."""
+        fails = [it["text"] for it in self.memory.items.values() if it["kind"] == "lesson" and "fail" in it.get("tags", [])][-8:]
+        if len(fails) < 3:
+            return []
+        raw = self.llm.chat([{"role": "system", "content": "You are Orion's rule-distillation module. Be concise."},
+                             {"role": "user", "content": "These are my recent failures:\n- " + "\n- ".join(fails) +
+                              '\nWrite up to 3 GENERAL, imperative rules in Spanish that would have prevented them. Reply with JSON: {"rules": ["..."]}'}],
+                            num_predict=300, temperature=0.2)
+        obj = parse_json_loose(raw)
+        out = [r for r in (obj.get("rules") if isinstance(obj, dict) else []) or [] if isinstance(r, str) and len(r) > 15][:3]
+        for r in out:
+            self.memory.add(r, kind="rule", tags=["rule", "distilled"])
+            say(f"  [regla destilada] {r}")
+        return out
 
     # --- reflexión: lecciones y habilidades (automejora del sistema)
     def reflect(self, goal: str, steps: List[dict], result: str, finished: bool, cycle: str) -> Dict[str, Any]:
@@ -1382,8 +1552,8 @@ class Agent:
     def chat_turn(self, text: str) -> str:
         self.memory.log_dialogue("user", text)
         hist = "\n".join(f"{d['role']}: {d['text']}" for d in self.memory.recent_dialogue(8)[:-1])
-        res = self.run_goal(f"El usuario dice: {text}\nResponde y, si hace falta, usa herramientas. Cierra con done(summary=tu respuesta).",
-                            extra=("Conversación reciente:\n" + hist) if hist else "", kind="chat")
+        res = self.run_goal(f"El usuario dice: {text}\nSi puedes responder sin herramientas (saludos, preguntas simples), responde directamente con done(summary=tu respuesta) en el primer paso. Usa herramientas solo si de verdad hacen falta.",
+                            max_steps=min(self.max_steps, 8), extra=("Conversación reciente:\n" + hist) if hist else "", kind="chat")
         answer = res["result"] if res["finished"] else (res["result"] or "(sin respuesta)")
         self.memory.log_dialogue("orion", answer)
         return answer
@@ -1804,16 +1974,25 @@ def cmd_run(a: argparse.Namespace) -> int:
             if pending:
                 goal = pending[0].read_text(encoding="utf-8").strip()
                 pending[0].rename(done_dir / pending[0].name)
-            elif a.free:
-                try:
-                    goal = agent.free_goal()
-                except LLMError as e:
-                    say(f"[aviso] {e}")
+            else:
+                goal = agent.practice_next()          # práctica deliberada de lo que falló
+                if goal:
+                    say(f"[práctica] reintento un objetivo que fallé, ahora con las reglas aprendidas: {clip(goal, 100)}")
+                elif a.free:
+                    try:
+                        goal = agent.free_goal()
+                    except LLMError as e:
+                        say(f"[aviso] {e}")
             if goal:
                 res = agent.run_goal(goal)
                 goals += 1
                 say(f"--> {clip(res['result'], 300)}  (éxito={res['success']}, puntuación={res['score']:.2f})")
                 maybe_restart(agent)
+                if a.distill_every and goals % a.distill_every == 0:
+                    try:
+                        agent.distill_rules()
+                    except LLMError as e:
+                        say(f"[aviso] {e}")
                 if a.maintenance_every and goals % a.maintenance_every == 0:
                     say("[mantenimiento] " + agent.maintenance())
                 if a.sleep_every and goals % a.sleep_every == 0:
@@ -1933,6 +2112,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--interval", type=float, default=5.0)
     r.add_argument("--max-cycles", type=int, default=0, help="0 = sin límite")
     r.add_argument("--maintenance-every", type=int, default=10)
+    r.add_argument("--distill-every", type=int, default=5, help="cada N objetivos, destila reglas generales de los fallos (0 = no)")
     r.add_argument("--sleep-every", type=int, default=0, help="cada N objetivos, consolidar en pesos (LoRA)")
     sp("eval", help="medir al agente con tareas verificables")
     s = sp("sleep", help="consolidar en pesos (LoRA) con compuerta de evaluación")
@@ -2030,6 +2210,10 @@ class ScriptedLLM:
                                "lessons": ["Comprobar el archivo después de escribirlo evita errores."]})
         if "curiosity module" in sysm:
             return json.dumps({"goal": "Ordenar y resumir mi memoria de trabajo."})
+        if "final-answer module" in sysm:
+            return "Respuesta de emergencia de prueba."
+        if "rule-distillation module" in sysm:
+            return json.dumps({"rules": ["Cuando una búsqueda falle dos veces, responder con lo que se sabe."]})
         r = self.replies.pop(0) if self.replies else {"thought": "fin", "tool": "done", "args": {"summary": "fin"}}
         return r if isinstance(r, str) else json.dumps(r)
 
@@ -2253,13 +2437,13 @@ def _t_agent(t: _T) -> None:
         t.check((Path(td) / "audit.jsonl").exists(), "auditoría")
     with tempfile.TemporaryDirectory() as td:   # respuestas inválidas
         ag = _mk_agent(td, ScriptedLLM(["basura", "mas basura", "y mas"]))
-        t.check("no produjo acciones válidas" in ag.run_goal("x")["result"], "tres respuestas inválidas abortan")
+        t.check(ag.run_goal("x")["end_reason"] == "invalid", "tres respuestas inválidas abortan")
     with tempfile.TemporaryDirectory() as td:   # bucle
         ag = _mk_agent(td, ScriptedLLM([_act("fs_list")] * 10), max_steps=10)
-        t.check("bucle" in ag.run_goal("x")["result"], "detecta bucles")
+        t.check(ag.run_goal("x")["end_reason"] == "loop", "detecta bucles")
     with tempfile.TemporaryDirectory() as td:   # presupuesto y STOP
         ag = _mk_agent(td, ScriptedLLM([_act("memory_stats"), _act("fs_list"), _act("fs_list", path=".")]), max_steps=2)
-        t.check("presupuesto" in ag.run_goal("x")["result"], "presupuesto de pasos")
+        t.check(ag.run_goal("x")["end_reason"] == "budget", "presupuesto de pasos")
         ag.stop_path.write_text("x")
         t.check("STOP" in ag.run_goal("y")["result"], "el archivo STOP detiene")
     with tempfile.TemporaryDirectory() as td:   # chat y objetivo libre
@@ -2267,6 +2451,51 @@ def _t_agent(t: _T) -> None:
         t.check(ag.chat_turn("hola") == "Hola Marta" and len(ag.memory.recent_dialogue(5)) == 2, "chat_turn")
         t.check(ag.free_goal() is not None, "objetivo libre")
         t.check("mantenimiento" in ag.maintenance() or "compactada" in ag.maintenance(), "mantenimiento")
+
+
+def _t_learning(t: _T) -> None:
+    """Aprender de los errores: autopsia automática, reglas siempre visibles, poda, práctica y respuesta de emergencia."""
+    goal = "El usuario dice: hola\nResponde..."
+    loop = [_act("fs_list", path="."), _act("fs_list", path="x"), _act("fs_list", path="."), _act("fs_list", path="x"),
+            _act("fs_list", path="."), _act("fs_list", path="x"), _act("fs_list", path=".")]
+    with tempfile.TemporaryDirectory() as td:
+        llm = ScriptedLLM(loop)
+        ag = _mk_agent(td, llm, max_steps=12)
+        t.check(sum(1 for i in ag.memory.items.values() if i["kind"] == "rule") >= 3, "hay reglas semilla desde el principio")
+        res = ag.run_goal(goal)
+        t.check(res["end_reason"] == "loop" and res["steps"] == 6, "el bucle alterno se corta (sin ejecutar la 4.ª repetición)")
+        t.check(res["result"] == "Respuesta de emergencia de prueba." and not res["success"], "aunque falle, el usuario recibe una respuesta")
+        rules = [i for i in ag.memory.items.values() if i["kind"] == "rule" and "learned" in i["tags"]]
+        lessons = [i for i in ag.memory.items.values() if i["kind"] == "lesson" and "fail" in i["tags"]]
+        t.check(rules and "directamente" in rules[0]["text"] and lessons and "loop" in lessons[0]["text"], "autopsia: regla y lección generadas sin depender del modelo")
+        t.check(ag.practice_next() == goal, "el objetivo fallido queda en la cola de práctica")
+        llm.replies = [_act("done", summary="Hola")]
+        ok = ag.run_goal(goal)
+        main_prompt = [c for c in llm.calls if "autonomous agent" in c[0]["content"]][-1][1]["content"]
+        t.check(ok["success"] and "directamente con done" in main_prompt and "LEARNED RULES" in main_prompt, "la regla aprendida aparece en el siguiente prompt")
+        t.check(ag.practice_next() is None, "al resolverlo, sale de la cola de práctica")
+        r2 = [i for i in ag.memory.items.values() if i["id"] == rules[0]["id"]][0]
+        t.check(r2.get("uses", 0) >= 1 and r2.get("wins", 0) >= 1, "las reglas usadas cuentan usos y victorias")
+        # poda: una regla que se usa mucho y casi nunca ayuda se descarta; las semilla no
+        bad = ag.memory.add("Regla inútil de prueba para podar", kind="rule", tags=["rule", "learned"])
+        ag.memory.update_meta(bad, uses=7, wins=0)
+        llm.replies = [_act("done", summary="ok")]
+        ag.run_goal("otro objetivo cualquiera")
+        t.check(bad not in ag.memory.items, "poda: una regla que no ayuda se descarta")
+        t.check(sum(1 for i in ag.memory.items.values() if "seed" in i["tags"]) == 3, "las reglas semilla no se podan")
+        for k in range(3):
+            ag.memory.add(f"Fallo de prueba número {k} con detalles distintos", kind="lesson", tags=["fail"], dedup=False)
+        t.check(ag.distill_rules() and any("distilled" in i["tags"] for i in ag.memory.items.values()), "destilado de reglas a partir de los fallos")
+    with tempfile.TemporaryDirectory() as td:   # avisos: pasos restantes y repetición
+        llm = ScriptedLLM([_act("fs_list", path="a"), _act("fs_list", path="b"), _act("fs_list", path="c"), _act("fs_list", path="d")])
+        ag = _mk_agent(td, llm, max_steps=4)
+        ag.run_goal("x")
+        t.check("Te quedan 2" in llm.calls[2][1]["content"], "avisa cuando quedan 2 pasos")
+    with tempfile.TemporaryDirectory() as td:
+        llm = ScriptedLLM([_act("memory_stats")] * 3 + [_act("done", summary="ok")])
+        ag = _mk_agent(td, llm, max_steps=8)
+        ag.run_goal("x")
+        t.check("exactamente esta acción 2 veces" in llm.calls[3][1]["content"], "avisa al repetir la misma acción")
 
 
 def _t_no_bypass(t: _T) -> None:
@@ -2580,7 +2809,7 @@ def run_selftest(quiet: bool = False) -> int:
     saved = {k: os.environ.get(k) for k in ("no_proxy", "NO_PROXY")}
     os.environ["no_proxy"] = os.environ["NO_PROXY"] = "127.0.0.1,localhost"
     set_quiet(True)
-    tests = [_t_net, _t_paths, _t_policy, _t_guarded, _t_memory, _t_parse, _t_agent, _t_no_bypass, _t_ollama, _t_web, _t_sleep, _t_cli]
+    tests = [_t_net, _t_paths, _t_policy, _t_guarded, _t_memory, _t_parse, _t_agent, _t_learning, _t_no_bypass, _t_ollama, _t_web, _t_sleep, _t_cli]
     if not os.environ.get("ORION_IN_GATE"):   # la compuerta ya se ejecuta dentro de la compuerta: evitar recursión
         tests.append(_t_gate)
     try:

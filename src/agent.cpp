@@ -60,7 +60,9 @@ static const char* kSystemPrompt =
     "4. Save durable knowledge with `remember`; keep CORE MEMORY short and current (core_set / core_append). Use `recall` before long tasks.\n"
     "5. Sensitive tools (shell, upload, self_patch) may need human approval. If denied, choose another approach or use ask_user.\n"
     "6. Never invent results: verify with tools. After 2 failed attempts change approach, or call `done` explaining what blocked you.\n"
-    "7. Be concise. Do not repeat an action that already succeeded.\n\nTOOLS\n";
+    "7. Be concise. Do not repeat an action that already succeeded.\n"
+    "8. Greetings, thanks, or anything you can answer from your own knowledge: call `done` IMMEDIATELY in step 1. Do not use tools needlessly.\n"
+    "9. Follow the LEARNED RULES: they come from your own past mistakes.\n\nTOOLS\n";
 
 Agent::Agent(fs::path h, LLM& l, Policy& p, Audit& a, Memory& m, AgentConfig c, fs::path src)
     : gate(src, h / "versions", p, a), home(std::move(h)), llm(l), policy(p), audit(a), memory(m), cfg(c), src_root_(std::move(src)) {
@@ -68,6 +70,7 @@ Agent::Agent(fs::path h, LLM& l, Policy& p, Audit& a, Memory& m, AgentConfig c, 
     fs::create_directories(workspace);
     fs::create_directories(home / "trajectories");
     build_tools();
+    seed_rules();
 }
 
 bool Agent::stop_requested() const { std::error_code ec; return fs::exists(home / "STOP", ec); }
@@ -286,7 +289,10 @@ std::string Agent::build_user_prompt(const std::string& goal, const std::vector<
     if (mems.empty()) mems = "(nada relevante)\n";
     std::string core = trim(memory.core_get());
     if (core.empty()) core = "(vacía: usa core_set para escribir lo esencial sobre ti y tu entorno)";
-    std::string head = "## GOAL\n" + goal + "\n\n## CORE MEMORY (siempre visible; editable)\n" + core + "\n\n## RELEVANT MEMORIES\n" + mems;
+    std::string rules;
+    for (auto& r : cycle_rules_) rules += "- " + r.text + "\n";
+    if (rules.empty()) rules = "(aún ninguna)\n";
+    std::string head = "## GOAL\n" + goal + "\n\n## LEARNED RULES (from my own past mistakes; follow them)\n" + rules + "\n## CORE MEMORY (siempre visible; editable)\n" + core + "\n\n## RELEVANT MEMORIES\n" + mems;
     if (!extra.empty()) head += "\n## CONTEXT\n" + extra + "\n";
     long budget = std::max(1500L, (long)cfg.context_chars - (long)head.size());
     std::vector<std::string> rows;
@@ -303,37 +309,65 @@ std::string Agent::build_user_prompt(const std::string& goal, const std::vector<
     return head + "\n## STEPS SO FAR\n" + recent + tail + "\nReply with ONE JSON object: {\"thought\": ..., \"tool\": ..., \"args\": {...}}";
 }
 
+static const std::vector<std::string> kSeedRules = {
+    "Si el usuario solo saluda, da las gracias o hace una pregunta que puedo responder sin herramientas, respondo directamente con done(summary=...) en el primer paso. No busco en la web.",
+    "Si repito una acción y no avanza, cambio de enfoque o termino con done explicando lo que sé. Nunca repito la misma búsqueda más de dos veces.",
+    "Cuando me queden pocos pasos, respondo con lo que ya sé en lugar de seguir buscando."};
+
+static bool is_web_tool(const std::string& t) { return t == "web_search" || t == "web_get" || t == "fs_list" || t == "recall"; }
+
+void Agent::seed_rules() {
+    for (auto& [id, it] : memory.items()) if (it.kind == "rule") return;
+    for (auto& r : kSeedRules) memory.add(r, "rule", {"rule", "seed"});
+}
+
+std::vector<MemItem> Agent::rules_for_prompt(size_t n) {
+    std::vector<MemItem> rules;
+    for (auto& [id, it] : memory.items()) if (it.kind == "rule") rules.push_back(it);
+    std::sort(rules.begin(), rules.end(), [](const MemItem& a, const MemItem& b) {
+        double sa = (a.wins + 1.0) / (a.uses + 2.0), sb = (b.wins + 1.0) / (b.uses + 2.0);
+        return sa != sb ? sa > sb : a.ts > b.ts;
+    });
+    if (rules.size() > n) rules.resize(n);
+    return rules;
+}
+
 GoalResult Agent::run_goal(const std::string& goal, int max_steps_in, const std::string& extra, bool reflect) {
     GoalResult res;
     res.cycle = [] { std::time_t t = std::time(nullptr); char b[32]; std::strftime(b, sizeof(b), "%Y%m%d_%H%M%S", std::localtime(&t)); return std::string(b); }() + "_" + rand_hex(4);
     res.goal = goal;
     policy.new_cycle();
     int max_steps = max_steps_in > 0 ? max_steps_in : cfg.max_steps;
+    cycle_rules_ = rules_for_prompt();
     std::vector<json> steps, record;
-    std::string note, sys = system_prompt();
+    std::string pending, sys = system_prompt();
+    std::map<std::string, int> counts;
     int strikes = 0;
-    bool budget_out = true;
     say("\n=== objetivo [" + res.cycle + "]: " + clip(goal, 200));
     for (int n = 1; n <= max_steps; ++n) {
-        if (stop_requested()) { res.result = "(detenido: existe el archivo STOP)"; budget_out = false; break; }
+        if (stop_requested()) { res.result = "(detenido: existe el archivo STOP)"; res.end_reason = "stop"; break; }
+        std::string note = pending;
+        pending.clear();
+        int left = max_steps - n + 1;
+        if (left <= 2 && max_steps > 3) note += std::string(note.empty() ? "" : " ") + "Te quedan " + std::to_string(left) + " paso(s). Responde YA con done usando lo que sepas; no empieces búsquedas nuevas.";
         json messages = json::array({{{"role", "system"}, {"content", sys}}, {{"role", "user"}, {"content", build_user_prompt(goal, steps, extra, note)}}});
-        note.clear();
         std::string raw;
-        try { raw = llm.chat(messages); } catch (const LLMError& e) { res.result = std::string("(error del modelo: ") + e.what() + ")"; say("  " + res.result); budget_out = false; break; }
+        try { raw = llm.chat(messages); } catch (const LLMError& e) { res.result = std::string("(error del modelo: ") + e.what() + ")"; res.end_reason = "model_error"; say("  " + res.result); break; }
         std::string err;
         auto action = parse_action(raw, err);
         if (!action) {
-            if (++strikes >= 3) { res.result = "(el modelo no produjo acciones válidas)"; budget_out = false; break; }
-            note = "Tu respuesta anterior fue inválida: " + err + ". Responde SOLO con el objeto JSON.";
+            pending = "Tu respuesta anterior fue inválida: " + err + ". Responde SOLO con el objeto JSON.";
+            if (++strikes >= 3) { res.result = "(el modelo no produjo acciones válidas)"; res.end_reason = "invalid"; break; }
             continue;
         }
         std::string tool = (*action)["tool"];
         json args = (*action)["args"];
-        auto same = [&](size_t k) { if (steps.size() < k) return false; for (size_t i = steps.size() - k; i < steps.size(); ++i) if (steps[i]["tool"] != tool || steps[i]["args"] != args) return false; return true; };
-        if (same(3)) {
-            note = "Estás repitiendo exactamente la misma acción. Cambia de enfoque o termina con done.";
-            if (same(5)) { res.result = "(bucle detectado: misma acción repetida)"; budget_out = false; break; }
-        }
+        int cnt = ++counts[json::array({tool, args}).dump()];
+        int streak = 1;
+        for (auto it = steps.rbegin(); it != steps.rend() && (*it)["tool"] == tool; ++it) ++streak;
+        if (cnt >= 4 || (is_web_tool(tool) && streak >= 7)) { res.result = "(bucle detectado: repites la misma acción sin avanzar)"; res.end_reason = "loop"; break; }
+        if (cnt == 3) pending = "Ya has hecho exactamente esta acción 2 veces sin avanzar. Cambia de enfoque o termina con done.";
+        else if (is_web_tool(tool) && streak >= 4) pending = "Llevas " + std::to_string(streak) + " usos seguidos de " + tool + ". Si ya tienes lo necesario, responde con done.";
         auto [ok, obs] = guarded_call(policy, audit, tools, tool, args);
         steps.push_back({{"n", n}, {"tool", tool}, {"args", args}, {"obs", obs}, {"ok", ok}});
         record.push_back({{"messages", messages}, {"response", jd(*action)}, {"ok", ok}});
@@ -341,21 +375,36 @@ GoalResult Agent::run_goal(const std::string& goal, int max_steps_in, const std:
         std::string one = obs;
         std::replace(one.begin(), one.end(), '\n', ' ');
         say("  " + std::to_string(n) + ". " + tool + " " + clip(jd(args), 110) + " -> " + (ok ? "OK " : "ERR ") + clip(one, 140));
-        if (tool == "done" && ok) { res.result = obs; res.finished = true; budget_out = false; break; }
-        if (gate.restart_requested) { res.result = "(código fuente actualizado; recompila y reinicia)"; budget_out = false; break; }
+        if (tool == "done" && ok) { res.result = obs; res.finished = true; break; }
+        if (gate.restart_requested) { res.result = "(código fuente actualizado; recompila y reinicia)"; res.end_reason = "restart"; break; }
     }
-    if (budget_out && res.result.empty()) res.result = "(se agotó el presupuesto de pasos)";
+    if (!res.finished && res.end_reason.empty()) { res.result = "(se agotó el presupuesto de pasos)"; res.end_reason = "budget"; }
     res.steps = (int)steps.size();
     res.success = res.finished;
     res.score = res.finished ? 1.0 : 0.0;
+    std::string raw_result = res.result;
+    if (!res.finished && (res.end_reason == "budget" || res.end_reason == "loop" || res.end_reason == "invalid")) {
+        std::string fb = final_answer(goal, steps);  // aunque falle, el usuario recibe una respuesta
+        if (!fb.empty()) { res.result = fb; say("  [respuesta de emergencia] " + clip(fb, 160)); }
+    }
     if (reflect && !steps.empty()) {
         try {
-            json r = reflect_on(goal, steps, res.result, res.finished, res.cycle);
+            json r = reflect_on(goal, steps, raw_result, res.finished, res.cycle);
             if (r.contains("score") && r["score"].is_number()) res.score = r["score"];
             if (r.contains("success") && r["success"].is_boolean()) res.success = r["success"].get<bool>() && res.finished;
             if (r.contains("lessons")) res.lessons = r["lessons"].get<std::vector<std::string>>();
         } catch (const std::exception&) {}
     }
+    // APRENDER del resultado, siempre: autopsia de los fallos y balance de las reglas usadas
+    try {
+        if (!res.success && (res.end_reason == "budget" || res.end_reason == "loop" || res.end_reason == "invalid")) {
+            res.learned = postmortem(goal, steps, res.end_reason, res.cycle);
+            practice_add(goal);
+        } else if (res.success) {
+            practice_mark(goal, true);
+        }
+        rule_feedback(res.success);
+    } catch (const std::exception&) {}
     if (!record.empty()) {
         bool good = res.success && res.score >= 0.7;
         std::string out = jd(json{{"meta", true}, {"cycle", res.cycle}, {"goal", goal}, {"good", good}, {"score", res.score}, {"result", clip(res.result, 300)}}) + "\n";
@@ -363,6 +412,97 @@ GoalResult Agent::run_goal(const std::string& goal, int max_steps_in, const std:
         write_file(home / "trajectories" / (res.cycle + ".jsonl"), out);
     }
     return res;
+}
+
+std::string Agent::final_answer(const std::string& goal, const std::vector<json>& steps) {
+    std::string trace;
+    for (size_t i = steps.size() > 6 ? steps.size() - 6 : 0; i < steps.size(); ++i) trace += steps[i]["tool"].get<std::string>() + " -> " + clip(steps[i]["obs"].get<std::string>(), 200) + "\n";
+    json msgs = json::array({{{"role", "system"}, {"content", "You are Orion's final-answer module. Answer the user briefly, in Spanish, with what you know. Do not call tools."}},
+                             {{"role", "user"}, {"content", "GOAL: " + goal + "\nWHAT I DID:\n" + (trace.empty() ? "(nada)" : trace) + "Write the final answer for the user."}}});
+    try { return trim(llm.chat(msgs, false, 250, 0.4)); } catch (const LLMError&) { return ""; }
+}
+
+std::vector<std::string> Agent::postmortem(const std::string& goal, const std::vector<json>& steps, const std::string& reason, const std::string& cycle) {
+    std::map<std::string, int> cnt;
+    std::string dom;
+    int n = 0, denied = 0;
+    for (auto& s : steps) {
+        std::string t = s["tool"];
+        if (++cnt[t] > n) { n = cnt[t]; dom = t; }
+        if (starts_with(s["obs"].get<std::string>(), "DENEGADO")) ++denied;
+    }
+    std::string first = goal.substr(0, goal.find('\n')), user_msg = first;
+    if (starts_with(first, "El usuario dice:")) user_msg = trim(first.substr(std::string("El usuario dice:").size()));
+    bool trivial = starts_with(goal, "El usuario dice:") && user_msg.size() <= 30;
+    std::string advice;
+    if (trivial && !dom.empty() && dom != "done") advice = "Si el usuario solo saluda, da las gracias o dice algo breve, respondo directamente con done(summary=...) en el primer paso, sin usar herramientas.";
+    else if ((dom == "web_search" || dom == "web_get") && n >= 3) advice = "No repito búsquedas: si dos búsquedas no dan nada útil, respondo con lo que sé usando done.";
+    else if (denied >= 2) advice = "Si una herramienta me la deniegan, no insisto: uso otra vía o pregunto con ask_user.";
+    else if (reason == "invalid") advice = "Respondo SOLO con el objeto JSON {thought, tool, args}, sin texto alrededor.";
+    else if (reason == "loop") advice = "Si noto que repito acciones sin avanzar, cambio de enfoque o cierro con done explicando lo que tengo.";
+    else advice = "Antes de agotar los pasos, resumo lo que sé y cierro con done.";
+    std::string lesson = "Fallo (" + reason + ") en «" + clip(user_msg.empty() ? goal : user_msg, 70) + "»: " + std::to_string(n) + "× " + (dom.empty() ? "ninguna acción" : dom) + " en " +
+                         std::to_string(steps.size()) + " pasos sin llegar a done. Lección: " + advice;
+    memory.add(lesson, "lesson", {"fail", reason, "cycle:" + cycle}, false);
+    std::string rid = memory.add(advice, "rule", {"rule", "learned", reason});
+    auto f = memory.items().find(rid);
+    if (f != memory.items().end()) memory.update_meta(rid, f->second.uses, f->second.wins, f->second.seen + 1);
+    say("  [aprendí] " + advice);
+    return {advice};
+}
+
+void Agent::rule_feedback(bool success) {
+    for (auto& r : cycle_rules_) {
+        auto f = memory.items().find(r.id);
+        if (f == memory.items().end()) continue;
+        int uses = f->second.uses + 1, wins = f->second.wins + (success ? 1 : 0);
+        bool seed = std::find(f->second.tags.begin(), f->second.tags.end(), "seed") != f->second.tags.end();
+        if (uses >= 8 && (double)wins / uses < 0.25 && !seed) { say("  [poda] regla descartada por no ayudar: " + clip(f->second.text, 80)); memory.forget(r.id); }
+        else memory.update_meta(r.id, uses, wins, f->second.seen);
+    }
+}
+
+json Agent::practice_load() const {
+    std::error_code ec;
+    if (!fs::exists(home / "practice.json", ec)) return json::array();
+    json j = json::parse(read_file(home / "practice.json"), nullptr, false);
+    return j.is_array() ? j : json::array();
+}
+void Agent::practice_save(const json& items) const { write_file(home / "practice.json", items.dump(1, ' ', false, json::error_handler_t::replace)); }
+void Agent::practice_add(const std::string& goal) {
+    json items = practice_load();
+    bool found = false;
+    for (auto& it : items) if (it.value("goal", std::string()) == goal) { it["solved"] = false; found = true; }
+    if (!found) items.push_back({{"goal", goal}, {"attempts", 0}, {"solved", false}, {"ts", now_str()}});
+    while (items.size() > 50) items.erase(items.begin());
+    practice_save(items);
+}
+void Agent::practice_mark(const std::string& goal, bool solved) {
+    json items = practice_load();
+    for (auto& it : items) if (it.value("goal", std::string()) == goal) { it["solved"] = solved; it["attempts"] = it.value("attempts", 0) + 1; }
+    practice_save(items);
+}
+std::optional<std::string> Agent::practice_next() {
+    for (auto& it : practice_load()) if (!it.value("solved", false) && it.value("attempts", 0) < 3) return it.value("goal", std::string());
+    return std::nullopt;
+}
+
+std::vector<std::string> Agent::distill_rules() {
+    std::vector<std::string> fails;
+    for (auto& [id, it] : memory.items())
+        if (it.kind == "lesson" && std::find(it.tags.begin(), it.tags.end(), "fail") != it.tags.end()) fails.push_back(it.text);
+    if (fails.size() < 3) return {};
+    if (fails.size() > 8) fails.erase(fails.begin(), fails.end() - 8);
+    std::string list;
+    for (auto& f : fails) list += "- " + f + "\n";
+    json msgs = json::array({{{"role", "system"}, {"content", "You are Orion's rule-distillation module. Be concise."}},
+        {{"role", "user"}, {"content", "These are my recent failures:\n" + list + "Write up to 3 GENERAL, imperative rules in Spanish that would have prevented them. Reply with JSON: {\"rules\": [\"...\"]}"}}});
+    auto obj = parse_json_loose(llm.chat(msgs, true, 300, 0.2));
+    std::vector<std::string> out;
+    if (obj && obj->is_object() && obj->contains("rules") && (*obj)["rules"].is_array())
+        for (auto& r : (*obj)["rules"]) if (r.is_string() && r.get<std::string>().size() > 15 && out.size() < 3) out.push_back(r);
+    for (auto& r : out) { memory.add(r, "rule", {"rule", "distilled"}); say("  [regla destilada] " + r); }
+    return out;
 }
 
 json Agent::reflect_on(const std::string& goal, const std::vector<json>& steps, const std::string& result, bool finished, const std::string& cycle) {
@@ -393,7 +533,8 @@ std::string Agent::chat_turn(const std::string& text) {
     auto hist = memory.recent_dialogue(8);
     std::string h;
     for (size_t i = 0; i + 1 < hist.size(); ++i) h += hist[i].value("role", std::string()) + ": " + hist[i].value("text", std::string()) + "\n";
-    GoalResult r = run_goal("El usuario dice: " + text + "\nResponde y, si hace falta, usa herramientas. Cierra con done(summary=tu respuesta).", 0, h.empty() ? "" : "Conversación reciente:\n" + h);
+    GoalResult r = run_goal("El usuario dice: " + text + "\nSi puedes responder sin herramientas (saludos, preguntas simples), responde directamente con done(summary=tu respuesta) en el primer paso. Usa herramientas solo si de verdad hacen falta.",
+                            std::min(cfg.max_steps, 8), h.empty() ? "" : "Conversación reciente:\n" + h);
     std::string answer = r.result.empty() ? "(sin respuesta)" : r.result;
     memory.log_dialogue("orion", answer);
     return answer;

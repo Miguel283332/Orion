@@ -109,6 +109,10 @@ def main():
                 c = json.dumps({"success": True, "score": 0.9, "skill": None, "lessons": ["Verificar el resultado con una herramienta evita errores."]})
             elif "curiosity module" in sysm:
                 c = json.dumps({"goal": "Ordenar mi memoria y resumir lo aprendido."})
+            elif "final-answer module" in sysm:
+                c = "Respuesta de emergencia."
+            elif "rule-distillation module" in sysm:
+                c = json.dumps({"rules": ["Si una búsqueda falla dos veces, respondo con lo que sé."]})
             elif sysm.startswith("Resume en"):
                 c = "Resumen de prueba."
             else:
