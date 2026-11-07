@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Orion VERSION 2.0.0 LANGUAGES CXX)
+project(OrionAgent VERSION 3.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,92 +8,46 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Tipo de build" FORCE)
 endif()
 
-option(ORION_OPENCL "Backend de GPU (OpenCL: dedicada, integrada o cualquier dispositivo)" ON)
-option(ORION_OPENMP "Paralelismo y SIMD en CPU con OpenMP" ON)
-option(ORION_NATIVE "Optimizar para la CPU de esta máquina (-march=native); desactívalo para binarios portables" ON)
 option(ORION_BUILD_TESTS "Compilar los tests" ON)
 option(ORION_WARNINGS_AS_ERRORS "Tratar warnings como errores" OFF)
 
-# ------------------------------------------------------------------ dependencias
-set(ORION_LIBS "")
-if(ORION_OPENMP)
-  find_package(OpenMP COMPONENTS CXX)
-  if(OpenMP_CXX_FOUND)
-    list(APPEND ORION_LIBS OpenMP::OpenMP_CXX)
-  else()
-    message(STATUS "OpenMP no encontrado: la CPU usará un solo hilo")
-  endif()
-endif()
-if(NOT OpenMP_CXX_FOUND)
-  set(ORION_NO_OMP_FLAGS -Wno-unknown-pragmas)
-endif()
-
-set(ORION_HAS_OPENCL OFF)
-if(ORION_OPENCL)
-  find_package(OpenCL QUIET)
-  if(OpenCL_FOUND)
-    set(ORION_HAS_OPENCL ON)
-    list(APPEND ORION_LIBS OpenCL::OpenCL)
-  else()
-    message(STATUS "OpenCL no encontrado: solo backend de CPU (instala ocl-icd-opencl-dev y el driver de tu GPU)")
-  endif()
+# ---- dependencia: nlohmann/json (instalada en el sistema o descargada al configurar)
+find_package(nlohmann_json 3.9 QUIET)
+if(NOT nlohmann_json_FOUND)
+  message(STATUS "nlohmann_json no encontrado: se descargará (FetchContent)")
+  include(FetchContent)
+  FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
+  FetchContent_MakeAvailable(json)
 endif()
 find_package(Threads REQUIRED)
-list(APPEND ORION_LIBS Threads::Threads)
 
-# ------------------------------------------------------------------ biblioteca
-add_library(orion_core STATIC
-  src/backend.cpp
-  src/backend_cpu.cpp
-  src/backend_opencl.cpp
-  src/model.cpp
-  src/dataset.cpp
-  src/evolve.cpp
-  src/chat.cpp)
-target_include_directories(orion_core PUBLIC include)
-target_link_libraries(orion_core PUBLIC ${ORION_LIBS})
-target_compile_definitions(orion_core PUBLIC
-  $<$<BOOL:${ORION_HAS_OPENCL}>:ORION_HAS_OPENCL=1>
-  $<$<BOOL:${ORION_HAS_OPENCL}>:CL_TARGET_OPENCL_VERSION=120>)
-
+add_library(orion_agent_core STATIC src/util.cpp src/judge.cpp src/net.cpp src/llm.cpp src/agent.cpp)
+target_include_directories(orion_agent_core PUBLIC include)
+target_link_libraries(orion_agent_core PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
+if(WIN32)
+  target_link_libraries(orion_agent_core PUBLIC ws2_32)
+  target_compile_definitions(orion_agent_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(orion_core PUBLIC -Wall -Wextra -Wno-unused-parameter -fno-math-errno ${ORION_NO_OMP_FLAGS})
-  if(ORION_NATIVE AND NOT CMAKE_CROSSCOMPILING)
-    target_compile_options(orion_core PUBLIC -march=native)
-  endif()
+  target_compile_options(orion_agent_core PUBLIC -Wall -Wextra -Wno-unused-parameter)
   if(ORION_WARNINGS_AS_ERRORS)
-    target_compile_options(orion_core PUBLIC -Werror)
-  endif()
-  # Evita avisos de atributos ignorados en OpenCL 1.2 desde cabeceras recientes
-  if(ORION_HAS_OPENCL)
-    target_compile_options(orion_core PUBLIC -Wno-deprecated-declarations -Wno-ignored-attributes)
+    target_compile_options(orion_agent_core PUBLIC -Werror)
   endif()
 elseif(MSVC)
-  # La optimización la decide el tipo de build (Release=/O2, Debug=/Od /RTC1): no forzar /O2 aquí.
-  target_compile_options(orion_core PUBLIC /W3 /utf-8 /fp:fast)
-  if(ORION_NATIVE AND NOT CMAKE_CROSSCOMPILING)
-    target_compile_options(orion_core PUBLIC /arch:AVX2)  # CPUs desde ~2013; desactiva ORION_NATIVE si no
-  endif()
-endif()
-if(WIN32)
-  target_compile_definitions(orion_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+  # la optimización la decide el tipo de build (no forzar /O2: choca con /RTC1 de Debug)
+  target_compile_options(orion_agent_core PUBLIC /W3 /utf-8)
 endif()
 
-# ------------------------------------------------------------------ ejecutables
-add_executable(orion src/main.cpp)
-target_link_libraries(orion PRIVATE orion_core)
-target_compile_definitions(orion PRIVATE
-  ORION_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
-  ORION_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+add_executable(orion_agent src/main.cpp)
+target_link_libraries(orion_agent PRIVATE orion_agent_core)
+target_compile_definitions(orion_agent PRIVATE ORION_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}" ORION_VERSION="${PROJECT_VERSION}")
 
 if(ORION_BUILD_TESTS)
   enable_testing()
-  add_executable(orion_tests tests/test_main.cpp)
-  target_link_libraries(orion_tests PRIVATE orion_core)
-  add_test(NAME orion_tests COMMAND orion_tests)
+  add_executable(orion_agent_tests tests/test_main.cpp)
+  target_link_libraries(orion_agent_tests PRIVATE orion_agent_core)
+  add_test(NAME orion_agent_tests COMMAND orion_agent_tests)
 endif()
 
-install(TARGETS orion RUNTIME DESTINATION bin)
-install(DIRECTORY data/ DESTINATION share/orion/data)
-
-message(STATUS "Orion ${PROJECT_VERSION}: OpenCL=${ORION_HAS_OPENCL} OpenMP=${OpenMP_CXX_FOUND} native=${ORION_NATIVE} build=${CMAKE_BUILD_TYPE}")
+install(TARGETS orion_agent RUNTIME DESTINATION bin)
+message(STATUS "OrionAgent ${PROJECT_VERSION}: build=${CMAKE_BUILD_TYPE}")

@@ -1,4 +1,7 @@
 build*/
 orion_home/
+__pycache__/
+*.pyc
 *.orn
 *.o
+*.part

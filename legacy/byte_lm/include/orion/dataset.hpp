@@ -28,6 +28,12 @@ public:
     // Relee los archivos registrados y añade los bytes nuevos. Devuelve true si el corpus creció.
     bool refresh();
 
+    // Los archivos de diálogo (nombre que empieza por "dialog" o "aprendido") enseñan el formato de
+    // conversación. Si el corpus es sobre todo prosa, se muestrean con más frecuencia al entrenar.
+    static bool isPriorityFile(const std::string& path);
+    void setPriorityMix(float p) { priorityMix_ = p; }
+    size_t priorityCount() const { return ptrain_.size(); }
+
     size_t size() const { return bytes_.size(); }
     size_t count(Split s) const { return pos(s).size(); }
     const std::vector<uint8_t>& bytes() const { return bytes_; }
@@ -46,7 +52,9 @@ private:
 
     std::vector<uint8_t> bytes_;
     uint64_t hist_[256] = {};
-    std::vector<uint32_t> train_, val_, test_;
+    std::vector<uint32_t> train_, val_, test_, ptrain_;  // ptrain_: parte de train que es diálogo
+    float priorityMix_ = 0.25f;
+    bool curPriority_ = false;
     std::map<std::string, uint64_t> consumed_;  // archivo -> bytes ya leídos
 };
 
