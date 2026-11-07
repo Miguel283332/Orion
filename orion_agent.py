@@ -1895,46 +1895,59 @@ def cmd_memory(a: argparse.Namespace) -> int:
     return 0
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="orion_agent.py", description=__doc__.split("\n\n")[0])
-    p.add_argument("--home", default=os.environ.get("ORION_HOME", "orion_home"), help="carpeta de memoria, trabajo y estado")
-    p.add_argument("--model", default=None, help=f"modelo de Ollama (por defecto el del estado o {DEFAULT_MODEL})")
-    p.add_argument("--embed-model", default=DEFAULT_EMBED)
-    p.add_argument("--ollama-url", default=None)
-    p.add_argument("--num-ctx", type=int, default=6144, help="ventana de contexto pedida a Ollama")
-    p.add_argument("--autonomy", choices=["strict", "supervised", "full"], default="supervised",
+def _common_options(p: argparse.ArgumentParser, sub: bool) -> None:
+    """Opciones comunes. En los subcomandos usan SUPPRESS para no pisar lo dado antes del subcomando:
+    así `--model X setup` y `setup --model X` significan lo mismo."""
+    S = argparse.SUPPRESS
+
+    def d(v: Any) -> Any:
+        return S if sub else v
+    p.add_argument("--home", default=d(os.environ.get("ORION_HOME", "orion_home")), help="carpeta de memoria, trabajo y estado")
+    p.add_argument("--model", default=d(None), help=f"modelo de Ollama (por defecto el del estado o {DEFAULT_MODEL})")
+    p.add_argument("--embed-model", default=d(DEFAULT_EMBED))
+    p.add_argument("--ollama-url", default=d(None))
+    p.add_argument("--num-ctx", type=int, default=d(6144), help="ventana de contexto pedida a Ollama")
+    p.add_argument("--autonomy", choices=["strict", "supervised", "full"], default=d("supervised"),
                    help="strict: todo lo no trivial pide permiso | supervised (defecto): shell/subidas piden permiso | "
                         "full: sin permisos ni confinamiento (solo en VM/Colab)")
-    p.add_argument("--allow-private-network", action="store_true", help="permitir peticiones a localhost/red local")
-    p.add_argument("--upload-host", action="append", help="host al que se puede subir sin preguntar (repetible)")
-    p.add_argument("--max-steps", type=int, default=12)
-    sub = p.add_subparsers(dest="cmd")
-    sub.add_parser("setup", help="instala/arranca Ollama y descarga los modelos")
-    sub.add_parser("chat", help="conversar con el agente")
-    g = sub.add_parser("goal", help="deja un objetivo en la bandeja de entrada")
+    p.add_argument("--allow-private-network", action="store_true", default=d(False), help="permitir peticiones a localhost/red local")
+    p.add_argument("--upload-host", action="append", default=d(None), help="host al que se puede subir sin preguntar (repetible)")
+    p.add_argument("--max-steps", type=int, default=d(12))
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="orion_agent.py", description=__doc__.split("\n\n")[0])
+    _common_options(p, sub=False)
+    subs = p.add_subparsers(dest="cmd")
+
+    def sp(name: str, **kw: Any) -> argparse.ArgumentParser:
+        x = subs.add_parser(name, **kw)
+        _common_options(x, sub=True)
+        return x
+    sp("setup", help="instala/arranca Ollama y descarga los modelos")
+    sp("chat", help="conversar con el agente")
+    g = sp("goal", help="deja un objetivo en la bandeja de entrada")
     g.add_argument("text", nargs="+")
-    r = sub.add_parser("run", help="bucle continuo")
+    r = sp("run", help="bucle continuo")
     r.add_argument("--free", action="store_true", help="si no hay tareas, el agente elige qué hacer")
     r.add_argument("--interval", type=float, default=5.0)
     r.add_argument("--max-cycles", type=int, default=0, help="0 = sin límite")
     r.add_argument("--maintenance-every", type=int, default=10)
     r.add_argument("--sleep-every", type=int, default=0, help="cada N objetivos, consolidar en pesos (LoRA)")
-    for nm in ("eval",):
-        sub.add_parser(nm, help="medir al agente con tareas verificables")
-    s = sub.add_parser("sleep", help="consolidar en pesos (LoRA) con compuerta de evaluación")
+    sp("eval", help="medir al agente con tareas verificables")
+    s = sp("sleep", help="consolidar en pesos (LoRA) con compuerta de evaluación")
     s.add_argument("--hf-base", default=None)
     s.add_argument("--min-examples", type=int, default=30)
     s.add_argument("--allow-cpu", action="store_true")
-    st = sub.add_parser("selftest", help="pruebas internas")
+    st = sp("selftest", help="pruebas internas")
     st.add_argument("--quiet", action="store_true")
-    sub.add_parser("approvals", help="peticiones de permiso pendientes")
+    sp("approvals", help="peticiones de permiso pendientes")
     for nm in ("approve", "deny"):
-        x = sub.add_parser(nm)
-        x.add_argument("id")
-    m = sub.add_parser("memory", help="ver/buscar en la memoria")
+        sp(nm).add_argument("id")
+    m = sp("memory", help="ver/buscar en la memoria")
     m.add_argument("query", nargs="*")
-    sub.add_parser("stop", help="crea el archivo STOP (el agente se detiene)")
-    sub.add_parser("resume", help="borra el archivo STOP")
+    sp("stop", help="crea el archivo STOP (el agente se detiene)")
+    sp("resume", help="borra el archivo STOP")
     return p
 
 
@@ -2448,6 +2461,17 @@ def _t_web(t: _T) -> None:
     t.check(normalize_ollama_url("0.0.0.0:11434") == "http://127.0.0.1:11434" and normalize_ollama_url("https://h:1/") == "https://h:1", "normalize_ollama_url")
 
 
+def _t_cli(t: _T) -> None:
+    P = build_parser()
+    a1 = P.parse_args(["--model", "x:1", "--home", "H", "setup"])
+    a2 = P.parse_args(["setup", "--model", "x:1", "--home", "H"])
+    t.check((a1.model, a1.home, a1.cmd) == (a2.model, a2.home, a2.cmd) == ("x:1", "H", "setup"), "las opciones comunes valen antes y después del subcomando")
+    a3 = P.parse_args(["--autonomy", "strict", "run", "--free", "--max-cycles", "2"])
+    t.check(a3.autonomy == "strict" and a3.free and a3.max_cycles == 2, "una opción global no se pierde al usar un subcomando")
+    a4 = P.parse_args(["goal", "hola", "mundo", "--upload-host", "a.com", "--upload-host", "b.com"])
+    t.check(a4.text == ["hola", "mundo"] and a4.upload_host == ["a.com", "b.com"] and a4.autonomy == "supervised" and a4.model is None, "valores por defecto y opciones repetibles")
+
+
 def _t_gate(t: _T) -> None:
     # Las cadenas `old` se parten en dos para que NO aparezcan literalmente en este código de prueba
     # (si no, el parche sería ambiguo y el test pasaría por el motivo equivocado).
@@ -2556,7 +2580,7 @@ def run_selftest(quiet: bool = False) -> int:
     saved = {k: os.environ.get(k) for k in ("no_proxy", "NO_PROXY")}
     os.environ["no_proxy"] = os.environ["NO_PROXY"] = "127.0.0.1,localhost"
     set_quiet(True)
-    tests = [_t_net, _t_paths, _t_policy, _t_guarded, _t_memory, _t_parse, _t_agent, _t_no_bypass, _t_ollama, _t_web, _t_sleep]
+    tests = [_t_net, _t_paths, _t_policy, _t_guarded, _t_memory, _t_parse, _t_agent, _t_no_bypass, _t_ollama, _t_web, _t_sleep, _t_cli]
     if not os.environ.get("ORION_IN_GATE"):   # la compuerta ya se ejecuta dentro de la compuerta: evitar recursión
         tests.append(_t_gate)
     try:

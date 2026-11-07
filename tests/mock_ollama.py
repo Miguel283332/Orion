@@ -26,6 +26,7 @@ def main():
     ap.add_argument("--port", type=int, default=11555)
     ap.add_argument("--script", default=None)
     ap.add_argument("--log", default=None)
+    ap.add_argument("--upload-dir", default=None, help="donde guardar lo recibido en PUT/POST /web/upload")
     a = ap.parse_args()
     replies = json.load(open(a.script, encoding="utf-8")) if a.script else []
     lock = threading.Lock()
@@ -40,9 +41,61 @@ def main():
             self.wfile.write(b)
 
         def do_GET(self):
+            if self.path.startswith("/web/"):
+                return self._web()
             self._send({"models": [{"name": "mock:latest"}, {"name": "nomic-embed-text:latest"}]})
 
+        def _web(self):
+            """Mini servidor web para probar web_get / download / upload."""
+            page = (b"<html><head><title>T</title><style>.x{}</style></head><body><h1>Titulo</h1><script>var s=1;</script>"
+                    b"<p>Hola <b>mundo</b></p><a href='/web/otra'>enlace uno</a></body></html>")
+            if self.path == "/web/redir":
+                self.send_response(302)
+                self.send_header("Location", "/web/page")
+                self.end_headers()
+                return
+            if self.path == "/web/page":
+                body, ctype = page, "text/html; charset=utf-8"
+            elif self.path == "/web/big":
+                body, ctype = bytes(3_000_000), "application/octet-stream"
+            elif self.path == "/web/blob":
+                body, ctype = bytes(range(256)) * 400, "application/octet-stream"
+            elif self.path == "/web/private":   # redirige a una IP privada (debe bloquearse)
+                self.send_response(302)
+                self.send_header("Location", "http://10.0.0.1/secreto")
+                self.end_headers()
+                return
+            else:
+                body, ctype = b"no encontrado", "text/plain"
+            self.send_response(200 if body != b"no encontrado" else 404)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def _upload(self):
+            data = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            if a.upload_dir:
+                import os
+                os.makedirs(a.upload_dir, exist_ok=True)
+                open(os.path.join(a.upload_dir, "last_upload.bin"), "wb").write(data)
+                json.dump({"method": self.command, "path": self.path, "headers": dict(self.headers.items()), "length": len(data)},
+                          open(os.path.join(a.upload_dir, "last_upload.json"), "w"))
+            b = b"recibido"
+            self.send_response(201)
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def do_PUT(self):
+            self._upload()
+
         def do_POST(self):
+            if self.path.startswith("/web/"):
+                return self._upload()
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             if a.log:
                 with lock, open(a.log, "a", encoding="utf-8") as f:
