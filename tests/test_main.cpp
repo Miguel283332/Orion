@@ -30,6 +30,8 @@ struct ScriptedLLM : LLM {
         if (contains(sys, "reflection module"))
             return json{{"success", true}, {"score", 0.9}, {"skill", nullptr}, {"lessons", {"Comprobar el archivo después de escribirlo evita errores."}}}.dump();
         if (contains(sys, "curiosity module")) return json{{"goal", "Ordenar y resumir mi memoria de trabajo."}}.dump();
+        if (contains(sys, "final-answer module")) return "Respuesta de emergencia de prueba.";
+        if (contains(sys, "rule-distillation module")) return json{{"rules", {"Cuando una búsqueda falle dos veces, responder con lo que se sabe."}}}.dump();
         if (starts_with(sys, "Resume en")) return "Resumen de prueba.";
         if (replies.empty()) return json{{"thought", "fin"}, {"tool", "done"}, {"args", {{"summary", "fin"}}}}.dump();
         json r = replies.front();
@@ -275,19 +277,19 @@ static void t_agent() {
         TempDir td;
         ScriptedLLM llm({json("basura"), json("mas basura"), json("y mas")});
         Rig rig(td.p, llm);
-        CHECK(contains(rig.ag.run_goal("x").result, "no produjo acciones válidas"), "tres respuestas inválidas abortan");
+        CHECK(rig.ag.run_goal("x").end_reason == "invalid", "tres respuestas inválidas abortan");
     }
     {
         TempDir td;
         ScriptedLLM llm(std::vector<json>(10, act("fs_list")));
         Rig rig(td.p, llm, Autonomy::Supervised, nullptr, false, 10);
-        CHECK(contains(rig.ag.run_goal("x").result, "bucle"), "detecta bucles");
+        CHECK(rig.ag.run_goal("x").end_reason == "loop", "detecta bucles");
     }
     {
         TempDir td;
         ScriptedLLM llm({act("memory_stats"), act("fs_list"), act("fs_list", {{"path", "."}})});
         Rig rig(td.p, llm, Autonomy::Supervised, nullptr, false, 2);
-        CHECK(contains(rig.ag.run_goal("x").result, "presupuesto"), "presupuesto de pasos");
+        CHECK(rig.ag.run_goal("x").end_reason == "budget", "presupuesto de pasos");
         write_file(td.p / "STOP", "x");
         CHECK(contains(rig.ag.run_goal("y").result, "STOP"), "el archivo STOP detiene");
     }
@@ -298,6 +300,64 @@ static void t_agent() {
         CHECK(rig.ag.chat_turn("hola") == "Hola Marta" && rig.mem.recent_dialogue(5).size() == 2, "chat_turn");
         CHECK(rig.ag.free_goal().has_value(), "objetivo libre");
         CHECK(contains(rig.ag.maintenance(), "compactada"), "mantenimiento");
+    }
+    set_quiet(false);
+}
+
+static void t_learning() {
+    set_quiet(true);
+    std::string goal = "El usuario dice: hola\nResponde...";
+    auto fl = [](const std::string& p) { return act("fs_list", {{"path", p}}); };
+    {
+        TempDir td;
+        ScriptedLLM llm({fl("."), fl("x"), fl("."), fl("x"), fl("."), fl("x"), fl(".")});
+        Rig rig(td.p, llm, Autonomy::Supervised, nullptr, false, 12);
+        int rules0 = 0;
+        for (auto& [id, it] : rig.mem.items()) if (it.kind == "rule") ++rules0;
+        CHECK(rules0 >= 3, "hay reglas semilla desde el principio");
+        GoalResult res = rig.ag.run_goal(goal);
+        CHECK(res.end_reason == "loop" && res.steps == 6, "el bucle alterno se corta (sin ejecutar la 4.ª repetición)");
+        CHECK(res.result == "Respuesta de emergencia de prueba." && !res.success, "aunque falle, el usuario recibe una respuesta");
+        std::string rule_id, rule_text;
+        bool lesson = false;
+        for (auto& [id, it] : rig.mem.items()) {
+            if (it.kind == "rule" && std::find(it.tags.begin(), it.tags.end(), "learned") != it.tags.end()) { rule_id = id; rule_text = it.text; }
+            if (it.kind == "lesson" && std::find(it.tags.begin(), it.tags.end(), "fail") != it.tags.end() && contains(it.text, "loop")) lesson = true;
+        }
+        CHECK(contains(rule_text, "directamente") && lesson, "autopsia: regla y lección generadas sin depender del modelo");
+        CHECK(rig.ag.practice_next() == goal, "el objetivo fallido queda en la cola de práctica");
+        llm.replies = {act("done", {{"summary", "Hola"}})};
+        GoalResult ok = rig.ag.run_goal(goal);
+        std::string main_prompt;
+        for (auto& c : llm.calls) if (contains(std::string(c[0]["content"]), "autonomous agent")) main_prompt = c[1]["content"];
+        CHECK(ok.success && contains(main_prompt, "directamente con done") && contains(main_prompt, "LEARNED RULES"), "la regla aprendida aparece en el siguiente prompt");
+        CHECK(!rig.ag.practice_next().has_value(), "al resolverlo, sale de la cola de práctica");
+        auto it = rig.mem.items().find(rule_id);
+        CHECK(it != rig.mem.items().end() && it->second.uses >= 1 && it->second.wins >= 1, "las reglas usadas cuentan usos y victorias");
+        std::string bad = rig.mem.add("Regla inútil de prueba para podar", "rule", {"rule", "learned"});
+        rig.mem.update_meta(bad, 7, 0, 1);
+        llm.replies = {act("done", {{"summary", "ok"}})};
+        rig.ag.run_goal("otro objetivo cualquiera");
+        CHECK(!rig.mem.items().count(bad), "poda: una regla que no ayuda se descarta");
+        int seeds = 0;
+        for (auto& [id, i2] : rig.mem.items()) if (std::find(i2.tags.begin(), i2.tags.end(), "seed") != i2.tags.end()) ++seeds;
+        CHECK(seeds == 3, "las reglas semilla no se podan");
+        for (int k = 0; k < 3; ++k) rig.mem.add("Fallo de prueba número " + std::to_string(k) + " con detalles distintos", "lesson", {"fail"}, false);
+        CHECK(!rig.ag.distill_rules().empty(), "destilado de reglas a partir de los fallos");
+    }
+    {
+        TempDir td;
+        ScriptedLLM llm({fl("a"), fl("b"), fl("c"), fl("d")});
+        Rig rig(td.p, llm, Autonomy::Supervised, nullptr, false, 4);
+        rig.ag.run_goal("x");
+        CHECK(contains(std::string(llm.calls[2][1]["content"]), "Te quedan 2"), "avisa cuando quedan 2 pasos");
+    }
+    {
+        TempDir td;
+        ScriptedLLM llm({act("memory_stats"), act("memory_stats"), act("memory_stats"), act("done", {{"summary", "ok"}})});
+        Rig rig(td.p, llm, Autonomy::Supervised, nullptr, false, 8);
+        rig.ag.run_goal("x");
+        CHECK(contains(std::string(llm.calls[3][1]["content"]), "exactamente esta acción 2 veces"), "avisa al repetir la misma acción");
     }
     set_quiet(false);
 }
@@ -402,7 +462,7 @@ static void t_eval() {
 int main() {
     set_quiet(true);
     struct { const char* name; void (*fn)(); } tests[] = {{"hash", t_hash}, {"net", t_net}, {"paths", t_paths}, {"policy", t_policy}, {"guarded", t_guarded},
-        {"memory", t_memory}, {"parse", t_parse}, {"agent", t_agent}, {"no_bypass", t_no_bypass}, {"text", t_text}, {"gate", t_gate}, {"eval", t_eval}};
+        {"memory", t_memory}, {"parse", t_parse}, {"agent", t_agent}, {"learning", t_learning}, {"no_bypass", t_no_bypass}, {"text", t_text}, {"gate", t_gate}, {"eval", t_eval}};
     for (auto& t : tests) {
         int f0 = g_fail;
         try { t.fn(); } catch (const std::exception& e) { ++g_fail; std::printf("  EXCEPCIÓN en %s: %s\n", t.name, e.what()); }

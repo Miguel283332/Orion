@@ -112,7 +112,7 @@ std::pair<std::vector<float>, std::string> Embedder::embed(const std::string& te
 static json item_json(const MemItem& it) {
     json e = json::array();
     for (float x : it.emb) e.push_back(std::round(x * 100000.0f) / 100000.0f);
-    return {{"id", it.id}, {"ts", it.ts}, {"kind", it.kind}, {"tags", it.tags}, {"text", it.text}, {"emb", e}, {"sig", it.sig}};
+    return {{"id", it.id}, {"ts", it.ts}, {"kind", it.kind}, {"tags", it.tags}, {"text", it.text}, {"emb", e}, {"sig", it.sig}, {"uses", it.uses}, {"wins", it.wins}, {"seen", it.seen}};
 }
 
 Memory::Memory(const fs::path& home, Embedder* emb) : emb_(emb) {
@@ -128,6 +128,7 @@ Memory::Memory(const fs::path& home, Embedder* emb) : emb_(emb) {
         if (j.value("deleted", false)) { items_.erase(j["id"].get<std::string>()); continue; }
         MemItem it;
         it.id = j["id"]; it.ts = j.value("ts", ""); it.kind = j.value("kind", "fact"); it.text = j.value("text", ""); it.sig = j.value("sig", "");
+        it.uses = j.value("uses", 0); it.wins = j.value("wins", 0); it.seen = j.value("seen", 1);
         if (j.contains("tags") && j["tags"].is_array()) for (auto& t : j["tags"]) if (t.is_string()) it.tags.push_back(t);
         if (j.contains("emb") && j["emb"].is_array()) for (auto& x : j["emb"]) it.emb.push_back(x.get<float>());
         items_[it.id] = it;
@@ -186,6 +187,13 @@ std::vector<std::pair<float, MemItem>> Memory::search(const std::string& query, 
     std::sort(out.begin(), out.end(), [](auto& a, auto& b) { return a.first > b.first; });
     if (out.size() > k) out.resize(k);
     return out;
+}
+
+void Memory::update_meta(const std::string& id, int uses, int wins, int seen) {
+    auto f = items_.find(id);
+    if (f == items_.end()) return;
+    f->second.uses = uses; f->second.wins = wins; f->second.seen = seen;
+    write_file(sem_, item_json(f->second).dump(-1, ' ', false, json::error_handler_t::replace) + "\n", true);
 }
 
 bool Memory::forget(const std::string& id) {

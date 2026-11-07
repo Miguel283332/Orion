@@ -36,6 +36,7 @@ struct MemItem {
     std::string id, ts, kind, text, sig;
     std::vector<std::string> tags;
     std::vector<float> emb;
+    int uses = 0, wins = 0, seen = 1;  // seguimiento de reglas (compatibles con la versión Python)
 };
 
 std::vector<float> hash_embed(const std::string& text, int dim = 256);
@@ -61,6 +62,7 @@ public:
     std::string add(const std::string& text, const std::string& kind = "fact", const std::vector<std::string>& tags = {}, bool dedup = true);
     std::vector<std::pair<float, MemItem>> search(const std::string& query, size_t k = 5, const std::string& kind = "");
     bool forget(const std::string& id);
+    void update_meta(const std::string& id, int uses, int wins, int seen);
     void compact();
     std::string stats() const;
     size_t size() const { return items_.size(); }

@@ -29,7 +29,7 @@ static void on_signal(int) { g_stop = true; }
 
 struct Opts {
     std::string cmd = "chat", home = env_or("ORION_HOME", "orion_home"), model, embed_model = "nomic-embed-text", ollama_url, autonomy = "supervised";
-    int num_ctx = 6144, max_steps = 12, max_cycles = 0, maintenance_every = 10;
+    int num_ctx = 6144, max_steps = 12, max_cycles = 0, maintenance_every = 10, distill_every = 5;
     double interval = 5.0;
     bool allow_private = false, free_mode = false;
     std::vector<std::string> upload_hosts, rest;
@@ -56,7 +56,7 @@ Opciones:
   --home DIR --model M --embed-model M --ollama-url URL --num-ctx N --max-steps N
   --autonomy strict|supervised|full   (supervised por defecto; full = sin permisos ni confinamiento)
   --allow-private-network   --upload-host HOST (repetible)
-  run: --free  --interval S  --max-cycles N  --maintenance-every N
+  run: --free  --interval S  --max-cycles N  --maintenance-every N  --distill-every N
 )";
 }
 
@@ -80,6 +80,7 @@ static Opts parse(int argc, char** argv) {
         else if (a == "--interval") o.interval = std::stod(next());
         else if (a == "--max-cycles") o.max_cycles = std::stoi(next());
         else if (a == "--maintenance-every") o.maintenance_every = std::stoi(next());
+        else if (a == "--distill-every") o.distill_every = std::stoi(next());
         else if (!a.empty() && a[0] != '-') { if (!have) { o.cmd = a; have = true; } else o.rest.push_back(a); }
         else { std::cerr << "opción desconocida: " << a << "\n"; usage(); std::exit(2); }
     }
@@ -187,6 +188,9 @@ static int cmd_run(Runtime& rt) {
             if (!pending.empty()) {
                 goal = trim(read_file(pending[0]));
                 fs::rename(pending[0], done / pending[0].filename());
+            } else if (auto pg = rt.agent->practice_next()) {   // práctica deliberada de lo que falló
+                goal = *pg;
+                say("[práctica] reintento un objetivo que fallé, ahora con las reglas aprendidas: " + clip(goal, 100));
             } else if (rt.o.free_mode) {
                 auto g = rt.agent->free_goal();
                 if (g) goal = *g;
@@ -198,6 +202,7 @@ static int cmd_run(Runtime& rt) {
                 std::snprintf(sc, sizeof(sc), "%.2f", r.score);
                 say("--> " + clip(r.result, 300) + "  (éxito=" + (r.success ? "true" : "false") + ", puntuación=" + sc + ")");
                 if (rt.agent->gate.restart_requested) { say("[código fuente actualizado] recompila (cmake --build) y reinicia."); break; }
+                if (rt.o.distill_every && goals % rt.o.distill_every == 0) rt.agent->distill_rules();
                 if (rt.o.maintenance_every && goals % rt.o.maintenance_every == 0) say("[mantenimiento] " + rt.agent->maintenance());
             } else {
                 sleep_ms((int)(rt.o.interval * 1000));

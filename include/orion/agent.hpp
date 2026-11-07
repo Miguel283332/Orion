@@ -10,11 +10,11 @@ struct AgentConfig {
 };
 
 struct GoalResult {
-    std::string cycle, goal, result;
+    std::string cycle, goal, result, end_reason;
     bool finished = false, success = false;
     double score = 0.0;
     int steps = 0;
-    std::vector<std::string> lessons;
+    std::vector<std::string> lessons, learned;
 };
 
 std::optional<json> parse_action(const std::string& raw, std::string& err);
@@ -26,6 +26,9 @@ public:
     std::string chat_turn(const std::string& text);
     std::optional<std::string> free_goal();
     std::string maintenance();
+    std::vector<std::string> distill_rules();
+    std::optional<std::string> practice_next();
+    std::vector<MemItem> rules_for_prompt(size_t n = 6);
     bool stop_requested() const;
     std::string system_prompt() const;
     std::string build_user_prompt(const std::string& goal, const std::vector<json>& steps, const std::string& extra, const std::string& note);
@@ -44,6 +47,15 @@ private:
     void build_tools();
     std::string ask_human(const std::string& q);
     json reflect_on(const std::string& goal, const std::vector<json>& steps, const std::string& result, bool finished, const std::string& cycle);
+    void seed_rules();
+    std::string final_answer(const std::string& goal, const std::vector<json>& steps);
+    std::vector<std::string> postmortem(const std::string& goal, const std::vector<json>& steps, const std::string& reason, const std::string& cycle);
+    void rule_feedback(bool success);
+    json practice_load() const;
+    void practice_save(const json& items) const;
+    void practice_add(const std::string& goal);
+    void practice_mark(const std::string& goal, bool solved);
+    std::vector<MemItem> cycle_rules_;
     fs::path src_root_;
 };
 

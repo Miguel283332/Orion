@@ -89,7 +89,11 @@ Además, siempre:
 
 ## Automejora
 
-1. **Del sistema** (barata, inmediata): tras cada objetivo reflexiona y guarda *lecciones* y *habilidades* que luego recupera por significado; reescribe su memoria núcleo.
+1. **Del sistema** (barata, inmediata y **continua**): tras cada objetivo reflexiona y guarda *lecciones* y *habilidades*. Además **aprende de sus fallos sin depender del modelo** (un modelo pequeño no siempre se da cuenta de que se equivocó):
+   - *Autopsia automática*: si un objetivo termina en bucle, presupuesto agotado o respuestas inválidas, el código analiza qué pasó y escribe una **lección** y una **regla** (p. ej. «si solo saludan, respondo con `done` sin usar herramientas»).
+   - *Reglas siempre visibles* en el prompt, con seguimiento de usos y victorias; las que no ayudan se **podan**.
+   - *Detección de bucles* (incluidos los que alternan dos acciones), aviso cuando quedan 2 pasos y **respuesta de emergencia**: aunque falle, el usuario recibe una respuesta.
+   - *Práctica deliberada*: en ocio, `run` reintenta los objetivos que falló, ya con las reglas nuevas; y cada N objetivos (`--distill-every`) destila reglas generales de los fallos acumulados.
 2. **Del código**: `self_patch` propone ediciones (`old`→`new`) a su propio código. Se prueban en una **copia**: el *juez* debe quedar intacto, compilar y **pasar las pruebas**; después pide tu aprobación, guarda copia de seguridad (`self_rollback` para volver) y reinicia (Python) o te pide recompilar (C++).
    *El juez* (permisos, red, auditoría, compuerta y pruebas) **no puede modificarse con `self_patch`**: así un parche no puede aprobar su propio examen.
 3. **De los pesos** (`sleep`, Python + GPU): convierte los pasos correctos de ciclos que él mismo evaluó como buenos en un dataset, afina un **LoRA**, lo registra en Ollama y lo adopta **solo si mejora estrictamente** en `eval` (si no, lo borra). Si falla dos veces seguidas, **sube el rango del LoRA** (más capacidad, "más neuronas") y reintenta.
@@ -97,9 +101,9 @@ Además, siempre:
 ## Pruebas
 
 ```bash
-python orion_agent.py selftest          # 146 comprobaciones (permisos, red, memoria, agente, compuerta...)
+python orion_agent.py selftest          # 159 comprobaciones (permisos, red, memoria, agente, compuerta...)
 tests/e2e_python.sh                     # proceso real contra un Ollama simulado
-ctest --test-dir build                  # 134 comprobaciones del agente C++
+ctest --test-dir build                  # 147 comprobaciones del agente C++
 tests/e2e_cpp.sh build/orion_agent      # proceso real C++: web, subidas con secretos, SSRF, permisos...
 tests/e2e_cpp_selfpatch.sh              # compuerta real de automodificación (compila candidatos; lento)
 ```
