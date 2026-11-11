@@ -272,6 +272,13 @@ LEAN_PROHIBIDO = re.compile(
 LEAN_ORDENES = re.compile(r"^(theorem|lemma|example|def|abbrev|instance|structure|inductive|class|namespace|end|open|section|"
                           r"variable|universe|attribute|noncomputable|private|protected|#)\b")
 
+PISTA_SIN_MATHLIB = ("PISTA: ese identificador no existe en Lean 4 sin Mathlib. Usa solo Nat/Int y operaciones básicas: "
+                     "«m es par» se escribe `m % 2 = 0` (o `∃ k, m = 2 * k`) y «m es impar» `m % 2 = 1`. "
+                     "NO existen Even, Odd, Nat.Prime, Finset, Real ni la notación ℕ (usa Nat).")
+PISTA_MATHLIB = ("PISTA: revisa el nombre del identificador (p. ej. Even, Odd, Nat.Prime) o exprésalo con operaciones básicas "
+                 "(`m % 2 = 0`).")
+PISTA_SINTAXIS = "PISTA: error de sintaxis; revisa paréntesis, ⟨ ⟩, la sangría (todas las tácticas con la misma) y que cada táctica esté en su línea."
+
 GUIA_LEAN = """REGLAS DE LEAN 4:
 - Demuestra EXACTAMENTE el enunciado dado: no lo cambies, no añadas hipótesis, no inventes resultados.
 - Prohibido: sorry, admit, axiom, native_decide, set_option, macros. Solo tácticas (:= by ...).
@@ -283,7 +290,8 @@ TÁCTICAS ÚTILES:
 - Existenciales: `exact ⟨testigo, by omega⟩` (las tuplas planas SÍ valen: ∃ x, P x ∧ Q x se prueba con
   `exact ⟨t, by omega, by omega⟩` o con `refine ⟨t, ?_, ?_⟩`).
 - Inducción: `induction n with | zero => ... | succ k ih => ...`.
-- exact? busca un lema que cierre el objetivo (úsalo si no sabes cuál aplicar)."""
+- exact? busca un lema que cierre el objetivo (úsalo si no sabes cuál aplicar).
+- SIN Mathlib no existen Even, Odd, Nat.Prime, Finset, Real: «par» es `m % 2 = 0`, «impar» `m % 2 = 1`."""
 
 
 class LeanVerificador(Verificador):
@@ -316,7 +324,9 @@ class LeanVerificador(Verificador):
 
     @property
     def encabezado(self) -> str:
-        return "import Mathlib" if self.mathlib else "import Lean"
+        # autoImplicit desactivado: un identificador desconocido da "unknown identifier 'even'" (claro) en lugar de
+        # convertirse en una variable implícita y producir "Function expected" (confuso para el modelo).
+        return ("import Mathlib" if self.mathlib else "import Lean") + "\nset_option autoImplicit false"
 
     def tacticas_auto(self) -> List[str]:
         base = ["omega", "(simp; done)", "(simp_all; done)", "decide", "rfl", "(intros; omega)", "(intros; simp_all; done)",
@@ -439,11 +449,22 @@ class LeanVerificador(Verificador):
         errores = [t.strip() for t in trozos if re.match(r"\S+:\d+:\d+: error", t.strip())]
         base = "\n".join(errores[:3]) if errores else salida
         base = re.sub(r"\S*Problema\.lean:", "línea ", base)
-        return recortar(base, 1400)
+        base = recortar(base, 1400)
+        if re.search(r"unknown (identifier|constant|namespace)|Function expected", salida):
+            base += "\n" + (PISTA_MATHLIB if self.mathlib else PISTA_SIN_MATHLIB)
+        elif re.search(r"unexpected token|expected term|expected '", salida):
+            base += "\n" + PISTA_SINTAXIS
+        return base
+
+    def titulo_error(self, resumen: str) -> str:
+        ls = [l.strip() for l in (resumen or "").splitlines() if l.strip() and not l.strip().startswith("PISTA")]
+        return " ".join(ls[:3])
 
     # --- prompts
     def prompt_formalizar(self, problema: str, error: str) -> str:
-        libs = "Puedes usar Mathlib (Real, Finset, ...)." if self.mathlib else "Solo hay Lean 4 sin Mathlib: usa Nat e Int (no Real)."
+        libs = ("Puedes usar Mathlib (Real, Finset, Even, Nat.Prime...)." if self.mathlib else
+                "Solo hay Lean 4 SIN Mathlib: usa Nat e Int (no Real) y operaciones básicas. «m es par» se escribe `m % 2 = 0` "
+                "(NO existen Even, Odd, Nat.Prime, Finset ni la notación ℕ: usa Nat).")
         return f"""Traduce el siguiente problema matemático a un ENUNCIADO de Lean 4 (sin demostrarlo).
 
 PROBLEMA:

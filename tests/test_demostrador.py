@@ -109,6 +109,20 @@ class TestUtilidades(unittest.TestCase):
         self.assertEqual(d.huella("a  b"), d.huella("a b"))
         self.assertEqual(d.huella("ℕ → ℕ"), d.huella("Nat -> Nat"))
 
+    def test_pistas_y_cabecera(self):
+        v = d.LeanVerificador(d.Config())
+        self.assertIn("set_option autoImplicit false", v.encabezado)
+        err = "/t/Problema.lean:3:46: error: unknown identifier 'even'"
+        r = v.resumir_error(err)
+        self.assertIn("PISTA", r)
+        self.assertIn("m % 2 = 0", r)
+        self.assertEqual(v.titulo_error(r), "línea 3:46: error: unknown identifier 'even'")   # el título no incluye la pista
+        self.assertIn("PISTA", v.resumir_error("/t/Problema.lean:3:56: error: Function expected at\n  even"))
+        self.assertIn("sintaxis", v.resumir_error("/t/Problema.lean:4:2: error: unexpected token ')'"))
+        self.assertNotIn("PISTA", v.resumir_error("/t/Problema.lean:3:2: error: unsolved goals\n⊢ n = n"))
+        self.assertIn("Even", d.LeanVerificador(d.Config(mathlib=True)).resumir_error(err))
+        self.assertIn("m % 2 = 0", v.prompt_formalizar("x", ""))
+
     def test_trivial(self):
         v = d.LeanVerificador(d.Config())
         self.assertIsNotNone(v.enunciado_trivial("theorem t : True := by"))
@@ -215,6 +229,21 @@ class TestMotorLean(Base):
         formalizaciones = [c for c in llm.llamadas if "Traduce el siguiente problema" in c["u"]]
         self.assertEqual(len(formalizaciones), 2)
         self.assertIn("Fidelidad", formalizaciones[1]["u"])
+
+    def test_even_de_mathlib_recibe_una_pista_accionable(self):
+        """Caso real: qwen2.5:7b escribió `even m` con `import Lean` y repitió el error 8 veces porque no era accionable."""
+        resp = iter([formalizar("theorem t (n : Nat) : ∃ m, m > n ∧ even m := by"), formalizar()])
+
+        def f(u, kw, n):
+            if "Traduce el siguiente problema" in u:
+                return next(resp)
+            return OK_PAR
+        llm = FakeLLM(f)
+        self.assertEqual(self.motor(llm).ejecutar(self.problema()), 0)
+        segunda = llm.llamadas[1]["u"]
+        self.assertIn("unknown identifier 'even'", segunda)
+        self.assertIn("PISTA", segunda)
+        self.assertIn("m % 2 = 0", segunda)
 
     def test_pausa_por_presupuesto_y_reanudacion(self):
         llm = FakeLLM(self.router([MAL_PAR, MAL_PAR, OK_PAR]))

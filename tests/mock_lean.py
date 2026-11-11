@@ -53,6 +53,12 @@ def main():
     definidos = []
     for linea, nombre, enun, cuerpo in decl:
         c = norm(cuerpo)
+        mm = re.search(r"\b([Ee]ven|[Oo]dd)\b", enun)
+        if mm:   # como Lean sin Mathlib (con autoImplicit desactivado)
+            salida.append(f"Problema.lean:{linea}:46: error: unknown identifier '{mm.group(1)}'")
+            errores += 1
+            definidos.append(nombre)
+            continue
         # delimitadores
         for a, b in (("(", ")"), ("⟨", "⟩"), ("[", "]")):
             if c.count(a) != c.count(b):

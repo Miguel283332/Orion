@@ -116,6 +116,23 @@ static void t_codigo() {
     CHECK(v.enunciado_trivial("theorem t : True := by") && v.enunciado_trivial("theorem t (h : False) : 1 = 2 := by") && !v.enunciado_trivial(FIRMA), "enunciado trivial");
 }
 
+static void t_pistas() {
+    Config c;
+    LeanVerificador v(c);
+    CHECK(contains(v.encabezado(), "set_option autoImplicit false"), "la cabecera desactiva autoImplicit");
+    std::string err = "/t/Problema.lean:3:46: error: unknown identifier 'even'";
+    std::string r = v.resumir_error(err);
+    CHECK(contains(r, "PISTA") && contains(r, "m % 2 = 0"), "pista accionable para un identificador inexistente");
+    CHECK(v.titulo_error(r) == "línea 3:46: error: unknown identifier 'even'", "el título no incluye la pista");
+    CHECK(contains(v.resumir_error("/t/Problema.lean:3:56: error: Function expected at\n  even"), "PISTA"), "Function expected también");
+    CHECK(contains(v.resumir_error("/t/Problema.lean:4:2: error: unexpected token ')'"), "sintaxis"), "pista de sintaxis");
+    CHECK(!contains(v.resumir_error("/t/Problema.lean:3:2: error: unsolved goals\n⊢ n = n"), "PISTA"), "sin pista en errores normales");
+    Config cm;
+    cm.mathlib = true;
+    CHECK(contains(LeanVerificador(cm).resumir_error(err), "Even"), "con Mathlib la pista es distinta");
+    CHECK(contains(v.prompt_formalizar("x", ""), "m % 2 = 0"), "el prompt de formalización avisa de qué no existe");
+}
+
 static void t_procesos() {
     OpcionesProceso op;
     op.timeout_s = 10;
@@ -205,6 +222,18 @@ static void t_motor() {
             return OK_PAR;
         });
         CHECK(r.correr(llm, cfg_base()) == 0 && contains(llm.llamadas[1].usuario, "trivial"), "el enunciado trivial se rechaza y se devuelve al modelo");
+    }
+    {   // caso real: `even` de Mathlib con `import Lean` -> el error debe ser accionable
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "par_mayor"}, {"acepta_contiene", {"2 * n + 2"}}}}));
+        int n_form = 0;
+        LlmFalso llm([&](const std::string& u, int) -> std::string {
+            if (contains(u, "Traduce el siguiente problema")) return (n_form++ == 0 ? formalizar_resp("theorem t (n : Nat) : ∃ m, m > n ∧ even m := by") : formalizar_resp()).dump();
+            return OK_PAR;
+        });
+        CHECK(r.correr(llm, cfg_base()) == 0, "tras `even` se reformaliza");
+        const std::string& segunda = llm.llamadas[1].usuario;
+        CHECK(contains(segunda, "unknown identifier 'even'") && contains(segunda, "PISTA") && contains(segunda, "m % 2 = 0"), "la 2.ª formalización recibe el error y la pista");
     }
     {   // fidelidad
         Rig r;
@@ -462,7 +491,7 @@ static void t_sympy() {
 
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
-    struct { const char* n; void (*f)(); } tests[] = {{"util", t_util}, {"codigo", t_codigo}, {"procesos", t_procesos}, {"lean_simulado", t_lean_simulado},
+    struct { const char* n; void (*f)(); } tests[] = {{"util", t_util}, {"codigo", t_codigo}, {"pistas", t_pistas}, {"procesos", t_procesos}, {"lean_simulado", t_lean_simulado},
                                                       {"motor", t_motor}, {"lemas", t_lemas}, {"sympy", t_sympy}};
     for (auto& t : tests) {
         int f0 = g_fail;

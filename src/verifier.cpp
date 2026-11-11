@@ -54,7 +54,14 @@ TÁCTICAS ÚTILES:
 - Existenciales: `exact ⟨testigo, by omega⟩` (las tuplas planas SÍ valen: ∃ x, P x ∧ Q x se prueba con
   `exact ⟨t, by omega, by omega⟩` o con `refine ⟨t, ?_, ?_⟩`).
 - Inducción: `induction n with | zero => ... | succ k ih => ...`.
-- exact? busca un lema que cierre el objetivo (úsalo si no sabes cuál aplicar).)G";
+- exact? busca un lema que cierre el objetivo (úsalo si no sabes cuál aplicar).
+- SIN Mathlib no existen Even, Odd, Nat.Prime, Finset, Real: «par» es `m % 2 = 0`, «impar» `m % 2 = 1`.)G";
+
+static const char* PISTA_SIN_MATHLIB =
+    "PISTA: ese identificador no existe en Lean 4 sin Mathlib. Usa solo Nat/Int y operaciones básicas: «m es par» se escribe `m % 2 = 0` "
+    "(o `∃ k, m = 2 * k`) y «m es impar» `m % 2 = 1`. NO existen Even, Odd, Nat.Prime, Finset, Real ni la notación ℕ (usa Nat).";
+static const char* PISTA_MATHLIB = "PISTA: revisa el nombre del identificador (p. ej. Even, Odd, Nat.Prime) o exprésalo con operaciones básicas (`m % 2 = 0`).";
+static const char* PISTA_SINTAXIS = "PISTA: error de sintaxis; revisa paréntesis, ⟨ ⟩, la sangría (todas las tácticas con la misma) y que cada táctica esté en su línea.";
 
 LeanVerificador::LeanVerificador(const Config& cfg) : cfg_(cfg), mathlib_(cfg.mathlib || !cfg.lake_dir.empty()) {
     nombre = "lean"; extension = "lean"; admite_plan = true;
@@ -65,7 +72,9 @@ LeanVerificador::LeanVerificador(const Config& cfg) : cfg_(cfg), mathlib_(cfg.ma
         if (!home) home = std::getenv("USERPROFILE");
         lean_bin_ = (fs::path(home ? home : ".") / ".elan" / "bin" / "lean").string();
     }
-    encabezado_ = mathlib_ ? "import Mathlib" : "import Lean";
+    // autoImplicit desactivado: un identificador desconocido da "unknown identifier 'even'" (claro) en lugar de
+    // convertirse en una variable implícita y producir "Function expected" (confuso para el modelo).
+    encabezado_ = std::string(mathlib_ ? "import Mathlib" : "import Lean") + "\nset_option autoImplicit false";
 }
 
 std::vector<std::string> LeanVerificador::comando(const fs::path& archivo) const {
@@ -275,11 +284,28 @@ std::string LeanVerificador::resumir_error(const std::string& salida) {
     if (errores.size() > 3) errores.resize(3);
     std::string base = errores.empty() ? salida : join(errores, "\n");
     static const std::regex ruta(R"(\S*Problema\.lean:)");
-    return recortar(std::regex_replace(base, ruta, "línea "), 1400);
+    base = recortar(std::regex_replace(base, ruta, "línea "), 1400);
+    static const std::regex desconocido(R"(unknown (identifier|constant|namespace)|Function expected)");
+    static const std::regex sintaxis(R"(unexpected token|expected term|expected ')");
+    if (std::regex_search(salida, desconocido)) base += std::string("\n") + (mathlib_ ? PISTA_MATHLIB : PISTA_SIN_MATHLIB);
+    else if (std::regex_search(salida, sintaxis)) base += std::string("\n") + PISTA_SINTAXIS;
+    return base;
+}
+
+std::string LeanVerificador::titulo_error(const std::string& resumen) {
+    std::vector<std::string> ls;
+    for (auto& l : split_lines(resumen)) {
+        std::string t = trim(l);
+        if (!t.empty() && !starts_with(t, "PISTA")) ls.push_back(t);
+    }
+    if (ls.size() > 3) ls.resize(3);
+    return join(ls, " ");
 }
 
 std::string LeanVerificador::prompt_formalizar(const std::string& problema, const std::string& error) {
-    std::string libs = mathlib_ ? "Puedes usar Mathlib (Real, Finset, ...)." : "Solo hay Lean 4 sin Mathlib: usa Nat e Int (no Real).";
+    std::string libs = mathlib_ ? "Puedes usar Mathlib (Real, Finset, Even, Nat.Prime...)."
+                                : "Solo hay Lean 4 SIN Mathlib: usa Nat e Int (no Real) y operaciones básicas. «m es par» se escribe `m % 2 = 0` "
+                                  "(NO existen Even, Odd, Nat.Prime, Finset ni la notación ℕ: usa Nat).";
     return rellenar(R"P(Traduce el siguiente problema matemático a un ENUNCIADO de Lean 4 (sin demostrarlo).
 
 PROBLEMA:
