@@ -212,7 +212,8 @@ std::string LeanVerificador::extraer_cuerpo(const std::string& texto) {
         std::vector<std::string> cola;
         for (size_t i = 1; i < lineas.size(); ++i) {
             const std::string& l = lineas[i];
-            if (!trim(l).empty() && l[0] != ' ' && l[0] != '\t') break;   // primera línea sin sangría = otro comando
+            static const std::regex ordenes(R"(^(theorem|lemma|example|def|abbrev|instance|structure|inductive|class|namespace|end|open|section|variable|universe|attribute|noncomputable|private|protected|#)\b)");
+            if (!trim(l).empty() && l[0] != ' ' && l[0] != '\t' && std::regex_search(trim(l), ordenes)) break;   // otro comando (tácticas sin sangría se aceptan)
             cola.push_back(l);
         }
         if (!cola.empty()) cuerpo = split_lines(dedent(join(cola, "\n")));

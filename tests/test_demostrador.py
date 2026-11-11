@@ -216,6 +216,11 @@ class TestMotorLean(Base):
         self.assertTrue((self.dir / "registro.jsonl").exists())
         self.assertIn("✔", d.informe(self.dir))
 
+    def test_cuerpo_sin_sangria_se_acepta(self):
+        v = d.LeanVerificador(self.cfg())
+        self.assertEqual(v.extraer_cuerpo("```lean\ntheorem t (n : Nat) : n = n := by\nintro\nrfl\n```"), "  intro\n  rfl")
+        self.assertEqual(v.extraer_cuerpo("```lean\ntheorem t (n : Nat) : n = n := by\n  rfl\n\ntheorem u : True := by\n  trivial\n```"), "  rfl")
+
     def test_construcciones_prohibidas_y_repetidas(self):
         malo = "```lean\n" + FIRMA + "\n  sorry\n```"
         nativo = "```lean\n" + FIRMA + "\n  native_decide\n```"

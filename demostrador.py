@@ -399,7 +399,7 @@ class LeanVerificador(Verificador):
             primera = lineas[0].strip()
             cola: List[str] = []
             for l in lineas[1:]:
-                if l.strip() and not l.startswith((" ", "\t")):   # primera línea sin sangría = otro comando
+                if l.strip() and not l.startswith((" ", "\t")) and LEAN_ORDENES.match(l.strip()):   # otro comando (las tácticas sin sangría se aceptan)
                     break
                 cola.append(l)
             cola = textwrap.dedent("\n".join(cola)).split("\n") if cola else []
