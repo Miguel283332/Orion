@@ -631,7 +631,13 @@ Tu código debe DEFINIR estas variables: @VARS@
 Después de tu código se comprobarán automáticamente estos criterios (no los escribas tú):
 @CRIT@
 
+EJEMPLO de solución (otro problema: velocidad final v de una caída libre desde la altura h; símbolos g, h, m, v ya declarados):
+```python
+E = Rational(1, 2)*m*v**2 - m*g*h
+v_fall = solve(Eq(E, 0), v)[0]
+```
 REGLAS: deriva el resultado (planteando ecuaciones y resolviendo con solve/dsolve/integrate/series/simplify...), no lo escribas ya hecho;
+`solve` devuelve una LISTA: toma el elemento con [0] (los símbolos con positive=True dan una sola raíz); no redeclares los símbolos del contexto;
 sin entrada/salida de ficheros ni red; sin `verificar`; el código debe ejecutarse sin errores.
 @PREV@
 

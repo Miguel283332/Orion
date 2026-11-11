@@ -83,6 +83,8 @@ python demostrador.py curriculo --pista sympy --dir curriculo_runs              
 ```
 [`curriculo/curriculo.json`](curriculo/curriculo.json) ordena los problemas por dificultad. Cada demostración **verificada** se guarda en `biblioteca_<pista>.json` y las más parecidas se muestran al modelo como ejemplos en los niveles siguientes (también con `resolver --biblioteca RUTA`). No cambia los pesos del modelo: mejora el *contexto* con lo ya demostrado. El progreso se reanuda (`progreso_<pista>.json`).
 
+**Física fácil sin depender del modelo en la fase 0:** los problemas incluidos (y los niveles 1, 2, 3 y 5 de física del currículo) llevan una `especificacion` (símbolos, variables de resultado y criterios) revisada a mano y comprobada con una solución de referencia en los tests. El modelo solo tiene que derivar el resultado. Los criterios los escribe una persona, no el modelo.
+
 La pista `abiertos` contiene conjeturas famosas (Goldbach, Collatz, primos gemelos...) **solo en su versión acotada y comprobable**; el enunciado general sigue abierto y no se afirma que el sistema pueda resolverlo. Los enunciados del currículo están revisados a mano, no compilados con Lean real.
 
 Endurecimiento tras revisión (Python y C++): el marcador `TODO_VERIFICADO` debe aparecer una sola vez y al final, los criterios deben ser booleanos estrictos, más construcciones prohibidas (`SystemExit`, `os`, `sys`, dunders, `trace`, `+native`...) y `keep_alive` en Ollama. **Sigue sin ser un sandbox real** (ver límites).

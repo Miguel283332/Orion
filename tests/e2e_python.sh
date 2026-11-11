@@ -82,6 +82,17 @@ $D curriculo --archivo "$W/cur.json" --pista lean --lean "$ROOT/tests/mock_lean.
 python3 -c "import json;b=json.load(open('$W/cur/biblioteca_lean.json'));assert len(b)==2" 2>/dev/null && ok "currículo: la biblioteca guarda las demostraciones verificadas" || bad "biblioteca"
 $D curriculo --archivo "$W/cur.json" --pista lean --lean "$ROOT/tests/mock_lean.py" --dir "$W/cur" 2>&1 | grep -q "ya verificado" && ok "currículo: reanuda sin repetir niveles resueltos" || bad "currículo reanudación"
 
+# ---------------------------------------------------------------- problema incluido de física: la especificación revisada evita la fase 0 (el modelo solo deriva)
+python3 - "$W" <<'PY'
+import json, sys
+W = sys.argv[1]
+json.dump([{"cuando": ["Resuelve este problema DERIVANDO"], "responde": "```python\nE = Rational(1, 2)*m*v**2 - G*M*m/r\nv_esc = solve(Eq(E, 0), v)[0]\n```"}],
+          open(W + "/reglas_esc.json", "w"), ensure_ascii=False)
+PY
+start_mock "$W/reglas_esc.json"
+$D resolver --problema escape_schwarzschild --dir "$W/esc" > "$W/esc.log" 2>&1; RC=$?
+[ $RC -eq 0 ] && grep -q "Especificación incluida" "$W/esc.log" && ok "escape_schwarzschild: especificación incluida, resuelto con una sola llamada al modelo" || { bad "escape incluido (salida $RC)"; cat "$W/esc.log"; }
+
 # ---------------------------------------------------------------- sin Ollama: error claro y estado a salvo
 kill $MOCK 2>/dev/null; sleep 0.3
 $D resolver --problema "$ROOT/problemas/facil_par_mayor.json" --lean "$ROOT/tests/mock_lean.py" --dir "$W/r3" > "$W/r4.log" 2>&1; RC=$?

@@ -631,6 +631,43 @@ class TestSympy(Base):
                                                               "verificar(1, simplify(v_esc**2 - 2*G*M/r))\nprint('TODO_VERIFICADO')", "x")
         self.assertFalse(ok)
 
+    REFERENCIAS = {
+        "velocidad_de_escape_newton": "v_esc = solve(Eq(Rational(1, 2)*m*v**2 - G*M*m/r, 0), v)[0]",
+        "orbita_circular_newton": "v_orb = solve(Eq(G*M*m/r**2, m*v**2/r), v)[0]\nT = 2*pi*r/v_orb",
+        "tercera_ley_de_kepler": "T2 = (2*pi*a/sqrt(G*M/a))**2",
+        "radio_de_schwarzschild": "c_, r_s = symbols('c_ r_s', positive=True)\nr_s = solve(Eq(sqrt(2*G*M/r), c), r)[0]",
+    }
+
+    def test_especificaciones_incluidas_son_validas_y_resolubles(self):
+        """Las especificaciones revisadas por una persona (escape + currículo) aceptan una solución correcta y rechazan una trivial."""
+        casos = [("escape_schwarzschild", d.PROBLEMAS_INCLUIDOS["escape_schwarzschild"]["especificacion"],
+                  "v_esc = solve(Eq(Rational(1, 2)*m*v**2 - G*M*m/r, 0), v)[0]", "v_esc = c")]
+        cur = json.loads((RAIZ / "curriculo" / "curriculo.json").read_text(encoding="utf-8"))
+        for e in cur["sympy"]:
+            if e.get("especificacion"):
+                casos.append((e["id"], e["especificacion"], self.REFERENCIAS[e["id"]], None))
+        ver = d.SympyVerificador(self.cfg_sympy())
+        for nombre, esp, bien, mal in casos:
+            est = {"preambulo": esp["preambulo"], "variables": esp["variables"], "criterios": esp["criterios"]}
+            ok, salida = ver.comprobar(ver.codigo(est, [], "", bien), nombre_final="x")
+            self.assertTrue(ok, nombre + "\n" + salida)
+            if mal:
+                self.assertFalse(ver.comprobar(ver.codigo(est, [], "", mal), nombre_final="x")[0], nombre)
+
+    def test_problema_incluido_usa_su_especificacion_sin_modelo(self):
+        llm = FakeLLM(lambda u, kw, n: self.BIEN if "Resuelve este problema DERIVANDO" in u else {})
+        p = dict(d.PROBLEMAS_INCLUIDOS["escape_schwarzschild"])
+        self.assertEqual(self.motor_sympy(llm).ejecutar(p), 0)
+        self.assertFalse(any("Convierte este problema" in c["u"] for c in llm.llamadas))   # fase 0 sin gastar una llamada
+        self.assertEqual(len(llm.llamadas), 1)
+
+    def test_repetida_conserva_el_error_real(self):
+        llm = FakeLLM(self.router([self.MAL, self.MAL, self.BIEN]))
+        self.assertEqual(self.motor_sympy(llm).ejecutar(self.problema("Escape.", "sympy")), 0)
+        tercero = llm.llamadas[3]["u"]                      # tras una respuesta repetida el modelo sigue viendo el fallo real
+        self.assertIn("CRITERIO_FALLA", tercero)
+        self.assertIn("CAMBIA de enfoque", tercero)
+
     def test_la_trampa_no_pasa(self):
         trampa = "```python\nv_esc = sqrt(2*G*M/r)\nverificar(1, True)\n```"
         llm = FakeLLM(self.router([trampa, self.BIEN]))

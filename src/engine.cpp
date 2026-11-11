@@ -15,6 +15,11 @@ static const double TEMPERATURAS[] = {0.1, 0.25, 0.4, 0.55, 0.7, 0.85};
 
 static std::string jd(const json& j) { return j.dump(-1, ' ', false, json::error_handler_t::replace); }
 static std::string primera_linea(const std::string& s) { auto l = split_lines(s); return l.empty() ? "" : l[0]; }
+static std::string ultima_linea(const std::string& s) {
+    auto l = split_lines(s);
+    while (!l.empty() && trim(l.back()).empty()) l.pop_back();
+    return l.empty() ? "" : l.back();
+}
 
 Motor::Motor(const Config& cfg, Llm& llm, Verificador& ver, fs::path directorio, std::function<void(const std::string&)> log)
     : cfg_(cfg), llm_cli_(llm), ver_(ver), dir_(std::move(directorio)), log_(std::move(log)), t_inicio_(std::chrono::steady_clock::now()) {
@@ -123,6 +128,23 @@ void Motor::formalizar() {
     say(nullptr, "FASE 0: formalización del enunciado");
     std::string problema = estado_["problema"]["enunciado"];
     std::string error = estado_.value("ultimo_error", std::string());
+    if (cfg_.backend == "sympy" && estado_["problema"].contains("especificacion") && estado_["problema"]["especificacion"].is_object()) {
+        try {   // especificación revisada por una persona: sin llamar al modelo
+            auto [firma, desc] = validar_formalizacion(estado_["problema"]["especificacion"]);
+            estado_["formalizado"] = true;
+            estado_["estado"] = "resolviendo";
+            estado_["raiz"] = nodo(firma, 0);
+            estado_["ultimo_error"] = "";
+            guardar();
+            evento("formalizado", {{"firma", firma}, {"especificacion", "incluida"}});
+            std::string crit;
+            for (auto& c : estado_["criterios"]) crit += (crit.empty() ? "" : " ; ") + c.get<std::string>();
+            say(nullptr, "Especificación incluida (revisada, sin usar el modelo):\n" + firma + "\nCriterios: " + crit);
+            return;
+        } catch (const ErrorValor& e) {
+            say(nullptr, std::string("La especificación incluida no es válida (") + ultima_linea(e.what()) + "); se pide al modelo.");
+        }
+    }
     while (estado_["intentos_formalizar"].get<int>() < cfg_.formalizar) {
         estado_["intentos_formalizar"] = estado_["intentos_formalizar"].get<int>() + 1;
         int i = estado_["intentos_formalizar"];
@@ -148,7 +170,7 @@ void Motor::formalizar() {
         estado_["ultimo_error"] = recortar(error, 800);
         guardar();
         evento("formalizacion_fallo", {{"error", recortar(error, 400)}});
-        say(nullptr, "formalización " + std::to_string(i) + "/" + std::to_string(cfg_.formalizar) + " rechazada: " + recortar(primera_linea(error), 140));
+        say(nullptr, "formalización " + std::to_string(i) + "/" + std::to_string(cfg_.formalizar) + " rechazada: " + recortar(ultima_linea(error), 200));
     }
     throw std::runtime_error("No se pudo formalizar el problema: " + recortar(error, 300));
 }
@@ -226,8 +248,15 @@ std::string Motor::bloque_nodo(const json& n) {
 
 bool Motor::fallo(json& n, const std::string& cuerpo, const std::string& salida, const std::string& tipo) {
     std::string resumen = ver_.resumir_error(salida);
-    n["ultimo_codigo"] = cuerpo;
-    n["ultimo_error"] = resumen;
+    if (contains(resumen, "repetida") && !n.value("ultimo_error", std::string()).empty()) {   // conservar el error REAL
+        std::string previo = n["ultimo_error"];
+        if (previo.rfind("(Repetiste", 0) == 0) { auto p = previo.find('\n'); if (p != std::string::npos) previo = previo.substr(p + 1); }
+        n["ultimo_codigo"] = cuerpo;
+        n["ultimo_error"] = "(Repetiste una respuesta idéntica a un intento anterior: CAMBIA de enfoque.)\n" + previo;
+    } else {
+        n["ultimo_codigo"] = cuerpo;
+        n["ultimo_error"] = resumen;
+    }
     n["errores"].push_back(resumen);
     while (n["errores"].size() > 6) n["errores"].erase(n["errores"].begin());
     if (!cuerpo.empty() && !contains(resumen, "repetida")) {

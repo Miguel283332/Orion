@@ -2,5 +2,17 @@
   "id": "escape_schwarzschild",
   "dominio": "fisica",
   "backend": "sympy",
-  "enunciado": "Una masa m escapa de la atracción de una masa M desde una distancia r, justo con energía mecánica total cero (energía cinética + energía potencial gravitatoria -G M m / r). Deduce la velocidad de escape v_esc(r) y demuestra que a la distancia r_s = 2 G M / c^2 (el radio de Schwarzschild) la velocidad de escape vale exactamente c."
+  "enunciado": "Una masa m escapa de la atracción de una masa M desde una distancia r, justo con energía mecánica total cero (energía cinética + energía potencial gravitatoria -G M m / r). Deduce la velocidad de escape v_esc(r) y demuestra que a la distancia r_s = 2 G M / c^2 (el radio de Schwarzschild) la velocidad de escape vale exactamente c.",
+  "especificacion": {
+    "descripcion": "Deducir la velocidad de escape v_esc(r) con energía mecánica total cero y comprobar que en r_s = 2GM/c^2 vale c.",
+    "preambulo": "G, M, c, r, m, v = symbols('G M c r m v', positive=True)\nr_s = 2*G*M/c**2",
+    "variables": [
+      "v_esc"
+    ],
+    "criterios": [
+      "simplify(v_esc**2 - 2*G*M/r) == 0",
+      "simplify(v_esc.subs(r, r_s) - c) == 0",
+      "v_esc.is_positive == True"
+    ]
+  }
 }
