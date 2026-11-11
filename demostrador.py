@@ -821,7 +821,13 @@ Tu código debe DEFINIR estas variables: {', '.join(estado.get('variables', []))
 Después de tu código se comprobarán automáticamente estos criterios (no los escribas tú):
 {crit}
 
-{self.ejemplos}REGLAS: deriva el resultado (planteando ecuaciones y resolviendo con solve/dsolve/integrate/series/simplify...), no lo escribas ya hecho;
+{self.ejemplos}EJEMPLO de solución (otro problema: velocidad final v de una caída libre desde la altura h; símbolos g, h, m, v ya declarados):
+```python
+E = Rational(1, 2)*m*v**2 - m*g*h
+v_fall = solve(Eq(E, 0), v)[0]
+```
+REGLAS: deriva el resultado (planteando ecuaciones y resolviendo con solve/dsolve/integrate/series/simplify...), no lo escribas ya hecho;
+`solve` devuelve una LISTA: toma el elemento con [0] (los símbolos con positive=True dan una sola raíz); no redeclares los símbolos del contexto;
 sin entrada/salida de ficheros ni red; sin `verificar`; el código debe ejecutarse sin errores.
 {prev}
 
@@ -944,6 +950,17 @@ class Motor:
         self.say(None, "FASE 0: formalización del enunciado")
         problema = self.estado["problema"]["enunciado"]
         error = self.estado.get("ultimo_error", "")
+        espec = self.estado["problema"].get("especificacion")
+        if isinstance(espec, dict) and self.cfg.backend == "sympy":      # especificación revisada por una persona: sin llamar al modelo
+            try:
+                firma, _ = self._validar_formalizacion(dict(espec))
+                self.estado.update({"formalizado": True, "estado": "resolviendo", "raiz": self.nodo(firma, 0), "ultimo_error": ""})
+                self.guardar()
+                self.evento("formalizado", firma=firma, especificacion="incluida")
+                self.say(None, "Especificación incluida (revisada, sin usar el modelo):\n" + firma + "\nCriterios: " + " ; ".join(self.estado["criterios"]))
+                return
+            except (ValueError, KeyError, TypeError) as e:
+                self.say(None, "La especificación incluida no es válida (" + str(e).splitlines()[-1] + "); se pide al modelo.")
         while self.estado["intentos_formalizar"] < self.cfg.formalizar:
             self.estado["intentos_formalizar"] += 1
             i = self.estado["intentos_formalizar"]
@@ -1040,7 +1057,11 @@ class Motor:
 
     def _fallo(self, n: Dict[str, Any], cuerpo: str, salida: str, tipo: str) -> bool:
         resumen = self.ver.resumir_error(salida)
-        n["ultimo_codigo"], n["ultimo_error"] = cuerpo, resumen
+        if "repetida" in resumen and n.get("ultimo_error"):      # conservar el error REAL para que el modelo pueda corregirlo
+            previo = re.sub(r"^\(Repetiste[^\n]*\n", "", n["ultimo_error"])
+            n["ultimo_codigo"], n["ultimo_error"] = cuerpo, "(Repetiste una respuesta idéntica a un intento anterior: CAMBIA de enfoque.)\n" + previo
+        else:
+            n["ultimo_codigo"], n["ultimo_error"] = cuerpo, resumen
         n["errores"] = (n["errores"] + [resumen])[-6:]
         if cuerpo and "repetida" not in resumen:
             n["cuerpos"] = (n.get("cuerpos", []) + [recortar(cuerpo, 500)])[-4:]
@@ -1279,7 +1300,21 @@ def informe(directorio: Path) -> str:
 
 
 # Problemas de ejemplo INCLUIDOS en el programa (no hace falta ningún archivo): --problema par_mayor
-PROBLEMAS_INCLUIDOS: Dict[str, Dict[str, str]] = {
+ESPEC_ESCAPE: Dict[str, Any] = {
+    "descripcion": "Deducir la velocidad de escape v_esc(r) con energía mecánica total cero y comprobar que en r_s = 2GM/c^2 vale c.",
+    "preambulo": "G, M, c, r, m, v = symbols('G M c r m v', positive=True)\nr_s = 2*G*M/c**2",
+    "variables": [
+        "v_esc"
+    ],
+    "criterios": [
+        "simplify(v_esc**2 - 2*G*M/r) == 0",
+        "simplify(v_esc.subs(r, r_s) - c) == 0",
+        "v_esc.is_positive == True"
+    ]
+}
+
+
+PROBLEMAS_INCLUIDOS: Dict[str, Dict[str, Any]] = {
     "par_mayor": {
         "id": "par_mayor",
         "dominio": "matematicas",
@@ -1290,7 +1325,8 @@ PROBLEMAS_INCLUIDOS: Dict[str, Dict[str, str]] = {
         "id": "escape_schwarzschild",
         "dominio": "fisica",
         "backend": "sympy",
-        "enunciado": "Una masa m escapa de la atracción de una masa M desde una distancia r, justo con energía mecánica total cero (energía cinética + energía potencial gravitatoria -G M m / r). Deduce la velocidad de escape v_esc(r) y demuestra que a la distancia r_s = 2 G M / c^2 (el radio de Schwarzschild) la velocidad de escape vale exactamente c."
+        "enunciado": "Una masa m escapa de la atracción de una masa M desde una distancia r, justo con energía mecánica total cero (energía cinética + energía potencial gravitatoria -G M m / r). Deduce la velocidad de escape v_esc(r) y demuestra que a la distancia r_s = 2 G M / c^2 (el radio de Schwarzschild) la velocidad de escape vale exactamente c.",
+        "especificacion": ESPEC_ESCAPE
     },
 }
 ALIAS_PROBLEMAS = {"facil_par_mayor": "par_mayor", "facil_velocidad_escape_schwarzschild": "escape_schwarzschild"}
@@ -1363,6 +1399,8 @@ def cmd_resolver(a: argparse.Namespace) -> int:
 
 def cmd_curriculo(a: argparse.Namespace) -> int:
     """Resuelve en orden los problemas de un currículo de dificultad creciente; cada uno verificado alimenta la biblioteca."""
+    if not Path(a.archivo).is_file():
+        raise SystemExit(f"No existe el currículo '{a.archivo}'. En Colab ejecuta antes la celda que lo escribe (sección 8) o pasa --archivo RUTA.")
     datos = json.loads(Path(a.archivo).read_text(encoding="utf-8"))
     lista = list(datos.get(a.pista, []))
     if not lista:
@@ -1387,6 +1425,8 @@ def cmd_curriculo(a: argparse.Namespace) -> int:
         a.problema, a.enunciado = None, None
         pr = {"id": p["id"], "enunciado": enun, "backend": a.pista if a.pista in ("lean", "sympy") else p.get("backend", "lean"),
               "dominio": "curriculo", "etiquetas": p.get("etiquetas", [])}
+        if p.get("especificacion"):
+            pr["especificacion"] = p["especificacion"]
         cfg = construir_config(a, pr)
         motor = Motor(cfg, LLM(cfg), crear_verificador(cfg), base_dir / "runs" / p["id"])
         try:

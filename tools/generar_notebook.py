@@ -114,7 +114,8 @@ Cómo se automejora un modelo pequeño **sin tocar sus pesos**:
 
 Por qué es honesto: lo verificado lo decide Lean/SymPy, no el modelo; el currículo mide hasta dónde llega *este* modelo con *este* hardware. No garantiza resolver problemas abiertos: los de la sección «abiertos» se tratan solo en su **versión acotada y comprobable**; el enunciado general sigue abierto.
 """),
-        escribir("curriculo/curriculo.json", (RAIZ / "curriculo" / "curriculo.json").read_text(encoding="utf-8")),
+        code("import os\nos.makedirs('curriculo', exist_ok=True)\nopen('curriculo/curriculo.json', 'w', encoding='utf-8').write(" +
+             repr((RAIZ / "curriculo" / "curriculo.json").read_text(encoding="utf-8")) + ")\nprint('curriculo/curriculo.json escrito')"),
         code("!python demostrador.py curriculo --pista lean --modelo {MODELO} --lean {LEAN} --dir {DIR}/curriculo --horas 3 --directos 4 --replanes 2"),
         md("Física (SymPy), del nivel 1 al 12. Cámbialo por `--desde 5 --hasta 9` para ir por tramos."),
         code("!python demostrador.py curriculo --pista sympy --modelo {MODELO} --dir {DIR}/curriculo --horas 3"),
