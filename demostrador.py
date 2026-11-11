@@ -55,7 +55,7 @@ class Config:
         self.modelo = MODELO_DEFECTO
         self.ollama_url = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
         self.num_ctx = 8192
-        self.num_predict = 1600
+        self.num_predict = 1000
         self.backend = "lean"
         self.lean = ""              # ruta a lean (vacío = buscar en PATH y ~/.elan/bin)
         self.lake_dir = ""          # proyecto lake con Mathlib: se usa `lake env lean` dentro de él
@@ -272,11 +272,12 @@ LEAN_PROHIBIDO = re.compile(
 LEAN_ORDENES = re.compile(r"^(theorem|lemma|example|def|abbrev|instance|structure|inductive|class|namespace|end|open|section|"
                           r"variable|universe|attribute|noncomputable|private|protected|#)\b")
 
-PISTA_SIN_MATHLIB = ("PISTA: ese identificador no existe en Lean 4 sin Mathlib. Usa solo Nat/Int y operaciones básicas: "
-                     "«m es par» se escribe `m % 2 = 0` (o `∃ k, m = 2 * k`) y «m es impar» `m % 2 = 1`. "
-                     "NO existen Even, Odd, Nat.Prime, Finset, Real ni la notación ℕ (usa Nat).")
-PISTA_MATHLIB = ("PISTA: revisa el nombre del identificador (p. ej. Even, Odd, Nat.Prime) o exprésalo con operaciones básicas "
-                 "(`m % 2 = 0`).")
+PISTA_SIN_MATHLIB = ("PISTA: ese identificador o lema NO existe (sin Mathlib hay muy pocos). No inventes nombres de lemas: usa tácticas "
+                     "básicas (omega, simp, constructor, `exact ⟨testigo, by omega⟩`). «m es par» se escribe `m % 2 = 0` (o `∃ k, m = 2 * k`) y "
+                     "«m es impar» `m % 2 = 1`. NO existen Even, Odd, Nat.Prime, Finset, Real ni la notación ℕ (usa Nat).")
+PISTA_MATHLIB = ("PISTA: ese identificador o lema NO existe con ese nombre. No lo inventes: revisa el nombre, prueba `exact?`, o exprésalo con "
+                 "operaciones básicas (`m % 2 = 0`) y tácticas como omega/simp.")
+RE_DESCONOCIDO = re.compile(r"unknown (identifier|constant|namespace)|unknownidentifier|unknownconstant|function expected", re.I)
 PISTA_SINTAXIS = "PISTA: error de sintaxis; revisa paréntesis, ⟨ ⟩, la sangría (todas las tácticas con la misma) y que cada táctica esté en su línea."
 
 GUIA_LEAN = """REGLAS DE LEAN 4:
@@ -433,11 +434,46 @@ class LeanVerificador(Verificador):
     def bloque(self, firma: str, cuerpo: str) -> str:
         return f"{firma}\n{cuerpo}"
 
+    def estrategia(self, firma: str) -> str:
+        """Consejos según la FORMA del objetivo (un modelo pequeño los necesita)."""
+        t = firma.split(":=")[0]
+        h = []
+        if "∃" in t:
+            h.append("El objetivo es un EXISTENCIAL: elige un testigo CONCRETO en función de las variables (p. ej. `2 * n + 2`) y escribe "
+                     "`exact ⟨testigo, by omega⟩`. NO busques lemas de la biblioteca ni uses `obtain` sobre lemas que no conozcas.")
+        if "↔" in t:
+            h.append("Es un si-y-solo-si: `constructor`, y en cada lado `intro h` y después `omega` (o `simp_all`).")
+        if "→" in t or "->" in t:
+            h.append("Hay una implicación: empieza con `intro h` y usa `h` (con `omega` o `exact`).")
+        if "%" in t or "/" in t:
+            h.append("`omega` entiende `%` y `/` por constantes: úsalo para cerrar las igualdades y desigualdades.")
+        return "\n".join("- " + x for x in h)
+
+    def testigos_auto(self, firma: str) -> List[str]:
+        """Alternativas `exact ⟨W, by omega⟩` para objetivos existenciales: prueba testigos lineales típicos sin gastar el modelo."""
+        t = firma.split(":=")[0]
+        if "∃" not in t:
+            return []
+        vars_: List[str] = []
+        for m in re.finditer(r"\(([^():]+?)\s*:\s*(?:Nat|Int)\)", t):
+            vars_ += m.group(1).split()
+        cands: List[str] = []
+        for v in vars_[:2]:
+            cands += [v, f"{v} + 1", f"{v} + 2", f"2 * {v}", f"2 * {v} + 1", f"2 * {v} + 2", f"3 * {v}", f"{v} * {v}", f"{v} * {v} + 1"]
+        cands += ["0", "1", "2"]
+        vistos, alts = set(), []
+        for w in cands:
+            if w not in vistos:
+                vistos.add(w)
+                alts.append(f"exact ⟨{w}, by omega⟩")
+        return alts
+
     def codigo(self, estado: Dict[str, Any], bloques: List[str], firma: str = "", cuerpo: str = "") -> str:
         return ensamblar(self.encabezado, estado.get("definiciones", ""), *bloques, f"{firma}\n{cuerpo}" if firma else "")
 
     def auto(self, estado: Dict[str, Any], firma: str, bloques: List[str]) -> Optional[str]:
         alts = self.tacticas_auto()
+        alts = alts[:-1] + self.testigos_auto(firma) + alts[-1:]     # `exact?` (lenta) siempre la última
         cuerpo = "  first\n" + "\n".join(f"  | {a}" for a in alts)
         ok, _ = self.comprobar(self.codigo(estado, bloques, firma, cuerpo))
         return cuerpo if ok else None
@@ -450,7 +486,7 @@ class LeanVerificador(Verificador):
         base = "\n".join(errores[:3]) if errores else salida
         base = re.sub(r"\S*Problema\.lean:", "línea ", base)
         base = recortar(base, 1400)
-        if re.search(r"unknown (identifier|constant|namespace)|Function expected", salida):
+        if RE_DESCONOCIDO.search(salida):
             base += "\n" + (PISTA_MATHLIB if self.mathlib else PISTA_SIN_MATHLIB)
         elif re.search(r"unexpected token|expected term|expected '", salida):
             base += "\n" + PISTA_SINTAXIS
@@ -511,6 +547,13 @@ Corrige ese intento: analiza el error y cambia lo necesario (no repitas lo mismo
         otros = ""
         if len(nodo.get("errores", [])) > 1:
             otros = "\nERRORES DE INTENTOS ANTERIORES (para no repetirlos):\n" + "\n---\n".join(nodo["errores"][-4:-1])
+        antes = nodo.get("cuerpos", [])[:-1][-2:]
+        if antes:
+            otros += "\nDEMOSTRACIONES QUE YA FALLARON (NO las repitas ni las variantes triviales):\n" + "\n---\n".join(
+                "```lean\n" + c + "\n```" for c in antes)
+        est = self.estrategia(firma)
+        if est:
+            otros += "\n\nESTRATEGIA SUGERIDA PARA ESTE OBJETIVO:\n" + est
         return f"""Demuestra este teorema en Lean 4.
 
 TEOREMA:
@@ -911,7 +954,7 @@ class Motor:
         self.estado["contador"] += 1
         return {"id": f"n{self.estado['contador']}", "firma": firma, "prof": prof, "estado": "pendiente", "cuerpo": "", "auto": False,
                 "directos": 0, "finales": 0, "replanes": 0, "necesita_plan": True, "hijos": [], "fallidos": [], "errores": [],
-                "ultimo_codigo": "", "ultimo_error": "", "huellas": []}
+                "ultimo_codigo": "", "ultimo_error": "", "huellas": [], "cuerpos": [], "repetidas": 0}
 
     def bloque_nodo(self, n: Dict[str, Any]) -> str:
         hijos = [self.bloque_nodo(h) for h in n["hijos"] if h["estado"] == "probado"]
@@ -921,6 +964,8 @@ class Motor:
         resumen = self.ver.resumir_error(salida)
         n["ultimo_codigo"], n["ultimo_error"] = cuerpo, resumen
         n["errores"] = (n["errores"] + [resumen])[-6:]
+        if cuerpo and "repetida" not in resumen:
+            n["cuerpos"] = (n.get("cuerpos", []) + [recortar(cuerpo, 500)])[-4:]
         self.guardar()
         self.evento("intento_fallido", nodo=n["id"], tipo=tipo, error=recortar(resumen, 400))
         self.say(n, f"{tipo} {n['directos'] if tipo == 'directo' else n['finales']}: FALLA — {recortar(self.ver.titulo_error(resumen), 130)}")
@@ -939,7 +984,7 @@ class Motor:
         clave = "directos" if tipo == "directo" else "finales"
         n[clave] += 1
         idx = n["directos"] + n["finales"] + 6 * n["replanes"]
-        temp = TEMPERATURAS[min(idx - 1, len(TEMPERATURAS) - 1)]
+        temp = min(1.0, TEMPERATURAS[min(idx - 1, len(TEMPERATURAS) - 1)] + 0.15 * n.get("repetidas", 0))   # si repite, más variedad
         seed = self.cfg.semilla * 1000003 + int(n["id"][1:]) * 1009 + n["directos"] * 31 + n["finales"] * 17 + n["replanes"] * 5
         resp = self._llm(self.ver.prompt_prueba(n["firma"], ctx, self.estado, n, tipo), temp, seed)
         cuerpo = self.ver.extraer_cuerpo(resp)
@@ -950,6 +995,7 @@ class Motor:
             return self._fallo(n, cuerpo, f"Construcción prohibida: {malo}", tipo)
         h = huella(cuerpo)
         if h in n["huellas"]:
+            n["repetidas"] = n.get("repetidas", 0) + 1
             return self._fallo(n, cuerpo, "Demostración repetida: ya se probó y falló.", tipo)
         n["huellas"] = (n["huellas"] + [h])[-200:]
         ok, salida = self.ver.comprobar(self.ver.codigo(self.estado, ctx, n["firma"], cuerpo), nombre_final="x" if self.ver.nombre == "sympy" else "")
@@ -1219,7 +1265,7 @@ def construir_parser() -> argparse.ArgumentParser:
     r.add_argument("--replanes", type=int, default=3)
     r.add_argument("--profundidad", type=int, default=2)
     r.add_argument("--num-ctx", type=int, default=8192)
-    r.add_argument("--num-predict", type=int, default=1600)
+    r.add_argument("--num-predict", type=int, default=1000, help="tokens máximos por respuesta (en CPU, 500-700 acelera mucho)")
     r.add_argument("--timeout-lean", type=int, default=90)
     r.add_argument("--semilla", type=int, default=1)
     r.add_argument("--sin-fidelidad", action="store_true", help="no comprobar con el modelo que el enunciado formal es fiel")

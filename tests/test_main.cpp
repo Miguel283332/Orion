@@ -2,7 +2,9 @@
 // la parte de SymPy usa SymPy real (python3 + sympy).
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <regex>
+#include <set>
 
 #include "demo/engine.hpp"
 
@@ -25,13 +27,13 @@ struct Temp {
     ~Temp() { std::error_code ec; fs::remove_all(p, ec); }
 };
 
-struct Llamada { std::string usuario; bool json_mode; int seed; };
+struct Llamada { std::string usuario; bool json_mode; int seed; double temperatura; };
 struct LlmFalso : Llm {
     std::function<std::string(const std::string&, int)> m;
     std::vector<Llamada> llamadas;
     explicit LlmFalso(std::function<std::string(const std::string&, int)> f) : m(std::move(f)) {}
-    std::string chat(const std::string&, const std::string& u, double, int, int seed, bool json_mode) override {
-        llamadas.push_back({u, json_mode, seed});
+    std::string chat(const std::string&, const std::string& u, double temperatura, int, int seed, bool json_mode) override {
+        llamadas.push_back({u, json_mode, seed, temperatura});
         return m(u, (int)llamadas.size());
     }
 };
@@ -129,8 +131,22 @@ static void t_pistas() {
     CHECK(!contains(v.resumir_error("/t/Problema.lean:3:2: error: unsolved goals\n⊢ n = n"), "PISTA"), "sin pista en errores normales");
     Config cm;
     cm.mathlib = true;
-    CHECK(contains(LeanVerificador(cm).resumir_error(err), "Even"), "con Mathlib la pista es distinta");
+    CHECK(contains(LeanVerificador(cm).resumir_error(err), "exact?"), "con Mathlib la pista es distinta");
     CHECK(contains(v.prompt_formalizar("x", ""), "m % 2 = 0"), "el prompt de formalización avisa de qué no existe");
+}
+
+static void t_mensajes_reales() {
+    Config c;
+    LeanVerificador v(c);
+    std::string real = "/tmp/x/Problema.lean:5:27: error(lean.unknownIdentifier): Unknown constant `Nat.exists_even`\n/tmp/x/Problema.lean:5:9: error: Tactic `rcases` failed";
+    std::string r = v.resumir_error(real);
+    CHECK(contains(r, "línea 5:27: error(lean.unknownIdentifier): Unknown constant `Nat.exists_even`") && contains(r, "PISTA") && contains(r, "No inventes"), "mensaje real de Lean 4.35: pista aunque sea 'Unknown constant' con mayúscula");
+    CHECK(contains(v.titulo_error(r), "Unknown constant `Nat.exists_even`"), "título del error");
+    CHECK(contains(v.estrategia(FIRMA), "EXISTENCIAL") && v.estrategia("theorem t (n : Nat) : n + 0 = n := by").empty(), "estrategia según la forma del objetivo");
+    auto alts = v.testigos_auto(FIRMA);
+    CHECK(std::find(alts.begin(), alts.end(), "exact ⟨2 * n + 2, by omega⟩") != alts.end(), "testigo 2 * n + 2 entre las alternativas automáticas");
+    CHECK(std::set<std::string>(alts.begin(), alts.end()).size() == alts.size() && v.testigos_auto("theorem t (n : Nat) : n = n := by").empty(), "sin duplicados; sin ∃ no hay testigos");
+    CHECK(v.testigos_auto("theorem t : ∃ m : Nat, m > 3 := by")[0] == "exact ⟨0, by omega⟩", "sin variables: constantes");
 }
 
 static void t_procesos() {
@@ -278,6 +294,15 @@ static void t_motor() {
         CHECK(r.correr(llm, c) == 0, "con fidelidad resuelve");
         for (auto& l : llm.llamadas) if (contains(l.usuario, "Traduce el siguiente problema")) ++forms;
         CHECK(forms == 2, "la fidelidad negativa provoca otra formalización");
+    }
+    {   // repetir sube la temperatura y se enseñan los fallos anteriores
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "par_mayor"}, {"acepta_contiene", {"2 * n + 2"}}}}));
+        std::string simp = "```lean\n" + FIRMA + "\n  simp\n```", decide = "```lean\n" + FIRMA + "\n  decide\n```";
+        LlmFalso llm(router({MAL_PAR, MAL_PAR, simp, decide, OK_PAR}));
+        CHECK(r.correr(llm, cfg_base(6)) == 0, "resuelve tras repetir");
+        CHECK(llm.llamadas.size() == 6 && std::abs(llm.llamadas[3].temperatura - (0.4 + 0.15)) < 1e-9, "tras una repetición, más temperatura");
+        CHECK(contains(llm.llamadas[1].usuario, "ESTRATEGIA SUGERIDA") && contains(llm.llamadas[5].usuario, "YA FALLARON") && contains(llm.llamadas[5].usuario, "simp"), "estrategia y fallos anteriores en el prompt");
     }
     {   // pausa por presupuesto y reanudación
         Rig r;
@@ -519,7 +544,7 @@ static void t_sympy() {
 
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
-    struct { const char* n; void (*f)(); } tests[] = {{"util", t_util}, {"codigo", t_codigo}, {"pistas", t_pistas}, {"procesos", t_procesos}, {"lean_simulado", t_lean_simulado},
+    struct { const char* n; void (*f)(); } tests[] = {{"util", t_util}, {"codigo", t_codigo}, {"pistas", t_pistas}, {"mensajes_reales", t_mensajes_reales}, {"procesos", t_procesos}, {"lean_simulado", t_lean_simulado},
                                                       {"motor", t_motor}, {"lemas", t_lemas}, {"sympy", t_sympy}};
     for (auto& t : tests) {
         int f0 = g_fail;
