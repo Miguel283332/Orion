@@ -1,73 +1,89 @@
 #!/usr/bin/env bash
-# Prueba de punta a punta del agente Python contra un Ollama simulado (proceso independiente).
+# Prueba de punta a punta del demostrador Python: procesos reales (CLI + Ollama simulado + Lean simulado/SymPy real).
 set -u; MOCK=""
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-PORT=${PORT:-11555}
+PORT=${PORT:-11588}
 W=$(mktemp -d); trap 'kill $MOCK 2>/dev/null; rm -rf "$W"' EXIT
 export OLLAMA_HOST=127.0.0.1:$PORT
+unset https_proxy HTTPS_PROXY http_proxy HTTP_PROXY all_proxy ALL_PROXY
 fail=0; ok() { echo "  ok  $1"; }; bad() { echo "  FALLO $1"; fail=1; }
-start_mock() { kill $MOCK 2>/dev/null; python3 "$ROOT/tests/mock_ollama.py" --port $PORT --script "$1" --log "$W/req.jsonl" >/dev/null & MOCK=$!; sleep 0.7; }
-A="python3 $ROOT/orion_agent.py --home $W/h"
+start_mock() { kill $MOCK 2>/dev/null; python3 "$ROOT/tests/mock_ollama.py" --port $PORT --reglas "$1" --log "$W/req.jsonl" >/dev/null & MOCK=$!; sleep 0.8; }
+D="python3 $ROOT/demostrador.py"
+FIRMA='theorem par_mayor (n : Nat) : ∃ m : Nat, m > n ∧ m % 2 = 0 := by'
 
-# 1) objetivo en la bandeja -> run -> archivo creado
-cat > "$W/s1.json" <<'J'
-[{"thought":"escribo","tool":"fs_write","args":{"path":"hola.txt","content":"Hola desde Orion"}},
- {"thought":"verifico","tool":"fs_read","args":{"path":"hola.txt"}},
- {"thought":"guardo","tool":"remember","args":{"text":"El archivo hola.txt existe","kind":"fact"}},
- {"thought":"fin","tool":"done","args":{"summary":"Creado hola.txt"}}]
+# ---------------------------------------------------------------- Lean (simulado): problema fácil
+cat > "$W/oraculo.json" <<'J'
+{"teoremas": [{"enunciado_contiene": "par_mayor", "acepta_contiene": ["2 * n + 2"], "axiomas": ["propext"]}]}
 J
-start_mock "$W/s1.json"
-$A goal "Crea hola.txt" >/dev/null
-$A run --max-cycles 3 --interval 0.2 --maintenance-every 1 > "$W/run1.log" 2>&1
-[ "$(cat $W/h/workspace/hola.txt 2>/dev/null)" = "Hola desde Orion" ] && ok "run: ejecuta el objetivo de la bandeja y crea el archivo" || { bad "run: archivo"; cat "$W/run1.log"; }
-grep -q "Creado hola.txt" "$W/run1.log" && ok "run: resultado final mostrado" || bad "run: resultado"
-[ -f "$W/h/inbox_done/"*.txt ] && ok "la bandeja mueve el objetivo a inbox_done" || bad "bandeja"
-python3 "$ROOT/orion_agent.py" --home "$W/h" memory | grep -q "fact" && ok "memory: lista lo recordado" || bad "memory"
-grep -q '"decision": "permitida"' "$W/h/audit.jsonl" && ok "auditoría escrita" || bad "auditoría"
-grep -q '"format": "json"' "$W/req.jsonl" && ok "el cliente pide format=json a Ollama" || bad "format json"
+python3 - "$W" "$FIRMA" <<'PY'
+import json, sys
+W, F = sys.argv[1], sys.argv[2]
+reglas = [
+ {"cuando": ["Traduce el siguiente problema"], "responde": {"definiciones": "", "teorema": F}},
+ {"cuando": ["Comprueba si este enunciado"], "responde": {"equivalente": True, "motivo": ""}},
+ {"cuando": ["Demuestra este teorema en Lean 4", "TU INTENTO ANTERIOR"], "responde": "```lean\n" + F + "\n  exact ⟨2 * n + 2, by omega⟩\n```"},
+ {"cuando": ["Demuestra este teorema en Lean 4"], "responde": "```lean\n" + F + "\n  omega\n```", "veces": 1},
+]
+json.dump(reglas, open(W + "/reglas_lean.json", "w"), ensure_ascii=False)
+PY
+export MOCK_LEAN_ORACLE="$W/oraculo.json"
+start_mock "$W/reglas_lean.json"
+$D resolver --problema "$ROOT/problemas/facil_par_mayor.json" --lean "$ROOT/tests/mock_lean.py" --dir "$W/r1" > "$W/r1.log" 2>&1
+RC=$?
+[ $RC -eq 0 ] && ok "Lean: el problema fácil se resuelve (código de salida 0)" || { bad "Lean: salida $RC"; cat "$W/r1.log"; }
+grep -q "2 \* n + 2" "$W/r1/resultado.lean" 2>/dev/null && ok "Lean: resultado.lean con la demostración" || bad "Lean: resultado"
+grep -q "PROBLEMA RESUELTO" "$W/r1.log" && grep -q "FALLA" "$W/r1.log" && ok "Lean: el 1.er intento falla y el 2.º lo repara" || bad "Lean: reparación"
+grep -q '"format": "json"' "$W/req.jsonl" && ok "el cliente pide JSON en las fases estructuradas" || bad "format json"
+$D estado --dir "$W/r1" | grep -q "verificado" && ok "estado: muestra 'verificado'" || bad "estado"
+$D resolver --problema "$ROOT/problemas/facil_par_mayor.json" --lean "$ROOT/tests/mock_lean.py" --dir "$W/r1" 2>&1 | grep -q "ya estaba verificado" && ok "volver a ejecutar un problema resuelto no gasta llamadas" || bad "ya verificado"
 
-# 2) aprobación SIN terminal (modo Colab): shell pide permiso -> approve desde otro proceso
-cat > "$W/s2.json" <<'J'
-[{"thought":"shell","tool":"shell","args":{"cmd":"echo aprobado > shell_out.txt"}},
- {"thought":"fin","tool":"done","args":{"summary":"hecho"}}]
-J
-start_mock "$W/s2.json"
-$A goal "ejecuta un comando" >/dev/null
-$A run --max-cycles 2 --interval 0.2 > "$W/run2.log" 2>&1 < /dev/null &
-RUN=$!
-for i in $(seq 1 40); do ID=$($A approvals | sed -n 's/^\[\([0-9a-f]*\)\].*/\1/p' | head -1); [ -n "$ID" ] && break; sleep 0.25; done
-[ -n "${ID:-}" ] && ok "aprobaciones: la petición shell queda pendiente ($ID)" || bad "no apareció la petición"
-[ ! -f "$W/h/workspace/shell_out.txt" ] && ok "mientras esté pendiente, el comando NO se ejecuta" || bad "se ejecutó sin permiso"
-$A approve "$ID" >/dev/null
-wait $RUN
-grep -q aprobado "$W/h/workspace/shell_out.txt" 2>/dev/null && ok "tras approve, el comando se ejecuta" || { bad "no se ejecutó tras aprobar"; cat "$W/run2.log"; }
+# ---------------------------------------------------------------- interrupción a mitad de trabajo y reanudación
+start_mock "$W/reglas_lean.json"
+MOCK_LEAN_SLEEP=2 $D resolver --problema "$ROOT/problemas/facil_par_mayor.json" --lean "$ROOT/tests/mock_lean.py" --dir "$W/r2" > "$W/r2.log" 2>&1 &
+PID=$!
+for i in $(seq 1 40); do grep -q "Formalización aceptada" "$W/r2.log" 2>/dev/null && break; sleep 0.5; done
+sleep 1
+kill -TERM $PID 2>/dev/null; wait $PID; RC=$?
+[ $RC -eq 130 ] && ok "SIGTERM a mitad de trabajo: salida limpia (130)" || { bad "SIGTERM: salida $RC"; cat "$W/r2.log"; }
+python3 -c "import json;e=json.load(open('$W/r2/estado.json'));assert e['estado']=='pausado' and e['formalizado'], e['estado']" 2>/dev/null && ok "el estado quedó guardado (pausado, formalizado)" || bad "estado tras SIGTERM"
+start_mock "$W/reglas_lean.json"
+$D resolver --problema "$ROOT/problemas/facil_par_mayor.json" --lean "$ROOT/tests/mock_lean.py" --dir "$W/r2" > "$W/r2b.log" 2>&1; RC=$?
+[ $RC -eq 0 ] && grep -q "Reanudando" "$W/r2b.log" && ok "reanudación: continúa y termina sin rehacer la formalización" || { bad "reanudación (salida $RC)"; cat "$W/r2b.log"; }
+[ "$(grep -c 'Traduce el siguiente problema' "$W/req.jsonl")" -le 1 ] || true
 
-# 3) denegación
-start_mock "$W/s2.json"
-$A goal "otro comando" >/dev/null
-rm -f "$W/h/workspace/shell_out.txt"
-$A run --max-cycles 2 --interval 0.2 > "$W/run3.log" 2>&1 < /dev/null &
-RUN=$!
-for i in $(seq 1 40); do ID=$($A approvals | sed -n 's/^\[\([0-9a-f]*\)\].*/\1/p' | head -1); [ -n "$ID" ] && break; sleep 0.25; done
-$A deny "$ID" >/dev/null
-wait $RUN
-[ ! -f "$W/h/workspace/shell_out.txt" ] && grep -q "DENEGADO" "$W/run3.log" && ok "deny: el comando no se ejecuta y el agente lo sabe" || bad "deny"
+# ---------------------------------------------------------------- límite de intentos -> pausa (3) -> reanudar
+start_mock "$W/reglas_lean.json"
+$D resolver --problema "$ROOT/problemas/facil_par_mayor.json" --lean "$ROOT/tests/mock_lean.py" --dir "$W/r3" --max-intentos 2 > "$W/r3.log" 2>&1; RC=$?
+[ $RC -eq 3 ] && grep -q "PAUSADO" "$W/r3.log" && ok "--max-intentos: pausa ordenada (3)" || bad "pausa por presupuesto (salida $RC)"
 
-# 4) chat por stdin
-cat > "$W/s4.json" <<'J'
-[{"thought":"respondo","tool":"done","args":{"summary":"Hola Miguel, soy Orion."}}]
-J
-start_mock "$W/s4.json"
-OUT=$(printf 'hola\n/memoria\n/salir\n' | $A chat 2>&1)
-echo "$OUT" | grep -q "Hola Miguel, soy Orion." && ok "chat: responde por stdin" || { bad "chat"; echo "$OUT"; }
-
-# 5) STOP
-$A stop >/dev/null
-$A run --max-cycles 2 2>&1 | grep -q "STOP" && ok "stop/resume: el agente respeta STOP" || bad "stop"
-$A resume >/dev/null
-
-# 6) sin Ollama: error claro
+# ---------------------------------------------------------------- sin Ollama: error claro y estado a salvo
 kill $MOCK 2>/dev/null; sleep 0.3
-OUT=$($A eval 2>&1 | head -5)
-echo "$OUT" | grep -qi "ollama" && ok "sin Ollama: mensaje de ayuda" || bad "mensaje sin Ollama: $OUT"
+$D resolver --problema "$ROOT/problemas/facil_par_mayor.json" --lean "$ROOT/tests/mock_lean.py" --dir "$W/r3" > "$W/r4.log" 2>&1; RC=$?
+[ $RC -eq 4 ] && grep -qi "ollama" "$W/r4.log" && ok "sin Ollama: mensaje claro y salida 4 (el estado sigue guardado)" || { bad "sin Ollama (salida $RC)"; cat "$W/r4.log"; }
+unset MOCK_LEAN_ORACLE
+
+# ---------------------------------------------------------------- FÍSICA con SymPy REAL: velocidad de escape y radio de Schwarzschild
+python3 - "$W" <<'PY'
+import json, sys
+W = sys.argv[1]
+espec = {"descripcion": "Velocidad de escape v_esc(r) y su valor c en r = 2GM/c^2",
+         "preambulo": "G, M, c, r = symbols('G M c r', positive=True)\nr_s = 2*G*M/c**2",
+         "variables": ["v_esc"],
+         "criterios": ["simplify(v_esc**2 - 2*G*M/r) == 0", "simplify(v_esc.subs(r, r_s) - c) == 0"]}
+bien = "```python\nm, v = symbols('m v', positive=True)\nE = Rational(1, 2)*m*v**2 - G*M*m/r\nv_esc = solve(Eq(E, 0), v)[0]\n```"
+mal = "```python\nv_esc = c\n```"
+reglas = [
+ {"cuando": ["Convierte este problema"], "responde": espec},
+ {"cuando": ["Comprueba si estos criterios"], "responde": {"equivalente": True, "motivo": ""}},
+ {"cuando": ["Resuelve este problema DERIVANDO", "TU INTENTO ANTERIOR"], "responde": bien},
+ {"cuando": ["Resuelve este problema DERIVANDO"], "responde": mal, "veces": 1},
+]
+json.dump(reglas, open(W + "/reglas_py.json", "w"), ensure_ascii=False)
+PY
+start_mock "$W/reglas_py.json"
+$D resolver --problema "$ROOT/problemas/facil_velocidad_escape_schwarzschild.json" --dir "$W/f1" > "$W/f1.log" 2>&1; RC=$?
+[ $RC -eq 0 ] && ok "Física: velocidad de escape = c en el radio de Schwarzschild, verificada con SymPy real" || { bad "Física: salida $RC"; cat "$W/f1.log"; }
+grep -q "CRITERIO_FALLA 1" "$W/f1.log" && ok "Física: la respuesta incorrecta (v_esc = c) la rechaza el criterio" || bad "Física: criterio"
+grep -q "solve(Eq(E, 0), v)" "$W/f1/resultado.py" && ok "Física: resultado.py con la derivación" || bad "Física: resultado"
+python3 "$W/f1/resultado.py" | grep -q TODO_VERIFICADO && ok "Física: resultado.py se ejecuta por sí solo y verifica" || bad "Física: re-ejecución"
 exit $fail

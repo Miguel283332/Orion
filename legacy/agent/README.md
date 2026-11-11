@@ -120,3 +120,6 @@ tests/e2e_cpp_selfpatch.sh              # compuerta real de automodificación (c
 - **Ejecución en Windows** de la versión C++. Compila sin avisos con GCC y clang (Linux) y se compila y enlaza como `.exe` con MinGW-w64 (cruzado), pero **no he podido ejecutarlo ni compilarlo con MSVC**. Si MSVC da algún error, dímelo.
 
 **Límites**: un LLM pequeño es un agente poco fiable en tareas largas; "automejora ilimitada" tiene el techo de la métrica (`eval`) y del cómputo; no hay emulación cerebral ni nada parecido a *Trascendencia*. Es una base seria y segura para experimentar.
+
+---
+> **Nota:** este agente conversacional ahora vive en `legacy/agent/`. El proyecto activo es el **demostrador** (ver el README de la raíz). Los scripts y comandos de este documento se ejecutan desde esta carpeta (`cd legacy/agent`).

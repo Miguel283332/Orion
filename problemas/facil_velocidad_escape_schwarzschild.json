@@ -1,0 +1,6 @@
+{
+  "id": "escape_schwarzschild",
+  "dominio": "fisica",
+  "backend": "sympy",
+  "enunciado": "Una masa m escapa de la atracción de una masa M desde una distancia r, justo con energía mecánica total cero (energía cinética + energía potencial gravitatoria -G M m / r). Deduce la velocidad de escape v_esc(r) y demuestra que a la distancia r_s = 2 G M / c^2 (el radio de Schwarzschild) la velocidad de escape vale exactamente c."
+}
