@@ -42,8 +42,9 @@ Necesitas [Ollama](https://ollama.com/download) con el modelo, y Lean 4 ([elan](
 
 ```bash
 ollama pull qwen2.5:7b
-python demostrador.py resolver --problema problemas/facil_par_mayor.json
-python demostrador.py resolver --problema problemas/facil_velocidad_escape_schwarzschild.json
+python demostrador.py problemas                          # lista los problemas incluidos (no hacen falta archivos)
+python demostrador.py resolver --problema par_mayor
+python demostrador.py resolver --problema escape_schwarzschild
 python demostrador.py estado --dir demostrador_runs/par_mayor_xxxxxxxx     # progreso
 ```
 
@@ -52,13 +53,13 @@ python demostrador.py estado --dir demostrador_runs/par_mayor_xxxxxxxx     # pro
 cmake -S . -B build
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
-./build/demostrador resolver --problema problemas/facil_par_mayor.json     # Windows: .\build\Release\demostrador.exe
+./build/demostrador resolver --problema par_mayor     # Windows: .\build\Release\demostrador.exe
 ```
 Necesita `curl` en el PATH (viene con Windows 10+ y Linux/macOS) y `python3` con `sympy` solo para el backend `sympy`.
 
 ## Problemas
 
-Un archivo JSON en [`problemas/`](problemas):
+Los dos de ejemplo van **dentro del programa** (`--problema par_mayor`, `--problema escape_schwarzschild`). Para otros, un archivo JSON (`--problema ruta.json`; hay ejemplos en [`problemas/`](problemas)) o `--enunciado "texto" --backend lean|sympy`:
 ```json
 { "id": "par_mayor", "dominio": "matematicas", "backend": "lean",
   "enunciado": "Demuestra la existencia de un número natural m mayor que cualquier n dado, tal que m sea par." }
@@ -90,9 +91,9 @@ Para análisis real o Mathlib hace falta un proyecto *lake* con Mathlib: `--lake
 ## Pruebas
 
 ```bash
-python demostrador.py selftest        # 32 pruebas del motor (Lean simulado, SymPy real)
+python demostrador.py selftest        # 42 pruebas del motor (Lean simulado, SymPy real)
 tests/e2e_python.sh                   # procesos reales: CLI + Ollama simulado + Lean simulado/SymPy real
-ctest --test-dir build                # 98 comprobaciones del motor C++
+ctest --test-dir build                # 129 comprobaciones del motor C++
 tests/e2e_cpp.sh build/demostrador    # procesos reales C++, SIGTERM, reanudación e interoperabilidad con Python
 ```
 

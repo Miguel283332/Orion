@@ -21,7 +21,7 @@ if(NOT nlohmann_json_FOUND)
 endif()
 find_package(Threads REQUIRED)
 
-add_library(demo_core STATIC src/util.cpp src/llm.cpp src/verifier.cpp src/engine.cpp)
+add_library(demo_core STATIC src/util.cpp src/llm.cpp src/verifier.cpp src/engine.cpp src/problemas.cpp)
 target_include_directories(demo_core PUBLIC include)
 target_link_libraries(demo_core PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
 if(WIN32)

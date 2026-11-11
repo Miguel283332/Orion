@@ -86,4 +86,15 @@ $D resolver --problema "$ROOT/problemas/facil_velocidad_escape_schwarzschild.jso
 grep -q "CRITERIO_FALLA 1" "$W/f1.log" && ok "Física: la respuesta incorrecta (v_esc = c) la rechaza el criterio" || bad "Física: criterio"
 grep -q "solve(Eq(E, 0), v)" "$W/f1/resultado.py" && ok "Física: resultado.py con la derivación" || bad "Física: resultado"
 python3 "$W/f1/resultado.py" | grep -q TODO_VERIFICADO && ok "Física: resultado.py se ejecuta por sí solo y verifica" || bad "Física: re-ejecución"
+# ---------------------------------------------------------------- caso real: sin la carpeta problemas/ (cuaderno de Colab)
+export MOCK_LEAN_ORACLE="$W/oraculo.json"
+start_mock "$W/reglas_lean.json"
+mkdir -p "$W/sin_problemas" && cd "$W/sin_problemas"
+$D resolver --problema par_mayor --lean "$ROOT/tests/mock_lean.py" --dir "$W/n1" > "$W/n1.log" 2>&1; RC=$?
+[ $RC -eq 0 ] && ok "problema incluido por nombre (--problema par_mayor): no necesita archivos" || { bad "por nombre (salida $RC)"; cat "$W/n1.log"; }
+start_mock "$W/reglas_lean.json"
+$D resolver --problema problemas/facil_par_mayor.json --lean "$ROOT/tests/mock_lean.py" --dir "$W/n2" > "$W/n2.log" 2>&1; RC=$?
+[ $RC -eq 0 ] && ok "la ruta antigua problemas/facil_par_mayor.json funciona aunque el archivo no exista" || { bad "ruta antigua (salida $RC)"; cat "$W/n2.log"; }
+$D resolver --problema no_existe.json --dir "$W/n3" 2>&1 | grep -q "Problemas incluidos" && ok "un problema desconocido da un error claro (sin traceback)" || bad "error claro"
+cd "$ROOT"
 exit $fail
