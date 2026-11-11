@@ -216,6 +216,11 @@ class TestMotorLean(Base):
         self.assertTrue((self.dir / "registro.jsonl").exists())
         self.assertIn("✔", d.informe(self.dir))
 
+    def test_cuerpo_sin_sangria_se_acepta(self):
+        v = d.LeanVerificador(self.cfg())
+        self.assertEqual(v.extraer_cuerpo("```lean\ntheorem t (n : Nat) : n = n := by\nintro\nrfl\n```"), "  intro\n  rfl")
+        self.assertEqual(v.extraer_cuerpo("```lean\ntheorem t (n : Nat) : n = n := by\n  rfl\n\ntheorem u : True := by\n  trivial\n```"), "  rfl")
+
     def test_construcciones_prohibidas_y_repetidas(self):
         malo = "```lean\n" + FIRMA + "\n  sorry\n```"
         nativo = "```lean\n" + FIRMA + "\n  native_decide\n```"
@@ -588,6 +593,42 @@ class TestSympy(Base):
         res = (self.dir / "resultado.py").read_text(encoding="utf-8")
         self.assertIn("solve(Eq(E, 0), v)", res)
         self.assertIn("verificar(2,", res)                          # los criterios los pone el motor, no el modelo
+
+    def test_biblioteca_aprende_y_reutiliza(self):
+        bib = str(Path(self.td.name) / "bib.json")
+        llm = FakeLLM(self.router([self.BIEN]))
+        self.assertEqual(self.motor_sympy(llm, biblioteca=bib).ejecutar(self.problema("Velocidad de escape de un cuerpo.", "sympy")), 0)
+        entradas = d.biblioteca_cargar(bib)
+        self.assertEqual(len(entradas), 1)
+        self.assertIn("solve(Eq(E, 0), v)", entradas[0]["codigo"])
+        # un problema parecido recibe la demostración verificada como ejemplo
+        ej = d.biblioteca_ejemplos(bib, "Velocidad de escape de otro cuerpo celeste.", "sympy")
+        self.assertIn("EJEMPLOS VERIFICADOS", ej)
+        self.assertIn("solve(Eq(E, 0), v)", ej)
+        self.assertEqual(d.biblioteca_ejemplos(bib, "Velocidad de escape de un cuerpo.", "sympy"), "")   # no se copia a sí mismo
+        self.assertEqual(d.biblioteca_ejemplos(bib, "Velocidad de escape de otro cuerpo.", "lean"), "")  # otro backend
+
+    def test_error_de_preambulo_es_accionable(self):
+        mala = dict(self.ESPEC, preambulo="x = indefinida + 1")
+        llm = FakeLLM(lambda u, kw, n: (mala if n == 1 else self.ESPEC) if "Convierte este problema" in u else
+                      ("```python\nm, v = symbols('m v', positive=True)\nv_esc = solve(Eq(Rational(1,2)*m*v**2 - G*M*m/r, 0), v)[0]\n```"))
+        m = self.motor_sympy(llm)
+        self.assertEqual(m.ejecutar(self.problema("Escape.", "sympy")), 0)
+        self.assertIn("NameError", llm.llamadas[1]["u"])      # el reintento ve el error real, el preámbulo y la pista
+        self.assertIn("TU PREÁMBULO", llm.llamadas[1]["u"])
+        self.assertIn("PISTA", llm.llamadas[1]["u"])
+        self.assertTrue(any("NameError" in l for l in self.logs if "rechazada" in l))   # el log muestra la excepción, no 'Traceback'
+
+    def test_trampas_de_salida_y_criterios_no_booleanos(self):
+        for trampa in ('v_esc = 0\nprint("TODO_VERIFICADO")\nraise SystemExit(0)', 'v_esc = 0\nimport os\nos._exit(0)',
+                       'v_esc = 0\nprint("TODO_VERIFICADO")'):
+            llm = FakeLLM(self.router(["```python\n" + trampa + "\n```", self.BIEN]))
+            self.assertEqual(self.motor_sympy(llm).ejecutar(self.problema("Escape.", "sympy")), 0, trampa)
+            self.setUp()
+        espec = dict(self.ESPEC, criterios=["simplify(v_esc**2 - 2*G*M/r)"])   # Expr, no booleano: antes aceptaba v_esc = 0
+        ok, _ = d.SympyVerificador(self.cfg_sympy()).comprobar(d.PRELUDIO_PY + "G, M, r = symbols('G M r', positive=True)\nv_esc = 0\n"
+                                                              "verificar(1, simplify(v_esc**2 - 2*G*M/r))\nprint('TODO_VERIFICADO')", "x")
+        self.assertFalse(ok)
 
     def test_la_trampa_no_pasa(self):
         trampa = "```python\nv_esc = sqrt(2*G*M/r)\nverificar(1, True)\n```"

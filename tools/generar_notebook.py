@@ -104,6 +104,28 @@ print()
 Los problemas con **Mathlib** (números reales, análisis...) necesitan un proyecto *lake* con Mathlib (descarga grande); después: `--lake-dir RUTA --mathlib`.
 Para problemas nuevos (agujeros negros, espacio-tiempo) usa `--enunciado "texto" --backend lean|sympy`, o un archivo `.json` con `enunciado`, `backend` y `dominio` (`--problema ruta.json`).
 """),
+        md("""
+## 8. Currículo: demostraciones cada vez más difíciles (la IA «aprende» sin cambiar de modelo)
+
+Cómo se automejora un modelo pequeño **sin tocar sus pesos**:
+1. Resuelve en orden **18 problemas de Lean** (de `omega` a inducción, definiciones recursivas, mcd y Fibonacci) y **12 de física** (de la velocidad de escape a *Schwarzschild resuelve las ecuaciones de vacío*).
+2. Cada demostración **verificada** entra en una **biblioteca** (en Drive). En los problemas siguientes, las más parecidas se le enseñan al modelo como ejemplos: el nivel *n* se apoya en los niveles anteriores.
+3. Si un nivel no sale, el currículo se detiene ahí (`--seguir` para saltarlo). Vuelve a ejecutar la celda: **reanuda donde estaba**.
+
+Por qué es honesto: lo verificado lo decide Lean/SymPy, no el modelo; el currículo mide hasta dónde llega *este* modelo con *este* hardware. No garantiza resolver problemas abiertos: los de la sección «abiertos» se tratan solo en su **versión acotada y comprobable**; el enunciado general sigue abierto.
+"""),
+        escribir("curriculo/curriculo.json", (RAIZ / "curriculo" / "curriculo.json").read_text(encoding="utf-8")),
+        code("!python demostrador.py curriculo --pista lean --modelo {MODELO} --lean {LEAN} --dir {DIR}/curriculo --horas 3 --directos 4 --replanes 2"),
+        md("Física (SymPy), del nivel 1 al 12. Cámbialo por `--desde 5 --hasta 9` para ir por tramos."),
+        code("!python demostrador.py curriculo --pista sympy --modelo {MODELO} --dir {DIR}/curriculo --horas 3"),
+        md("Mira la biblioteca acumulada (lo que el sistema ya sabe demostrar) y el progreso:"),
+        code("""
+import json, os
+for pista in ('lean', 'sympy'):
+    f = f'{DIR}/curriculo/progreso_{pista}.json'
+    if os.path.exists(f):
+        print(pista, json.load(open(f)))
+"""),
     ]
     return {"cells": celdas, "metadata": {"colab": {"provenance": []}, "kernelspec": {"name": "python3", "display_name": "Python 3"},
                                           "language_info": {"name": "python"}, "accelerator": "GPU"}, "nbformat": 4, "nbformat_minor": 5}
