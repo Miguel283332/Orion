@@ -627,7 +627,7 @@ class TestProblemasYCLI(unittest.TestCase):
             self.assertIn(p.get("backend", "lean"), ("lean", "sympy"), f.name)
 
     def test_notebook_de_colab_sincronizado_con_el_codigo(self):
-        """El cuaderno lleva el código incrustado (no usa git clone): debe ser idéntico a demostrador.py y a los problemas."""
+        """El cuaderno lleva el código incrustado (no usa git clone): debe ser idéntico a demostrador.py."""
         nb = json.loads((RAIZ / "colab" / "Demostrador_Colab.ipynb").read_text(encoding="utf-8"))
         celdas = {}
         for c in nb["cells"]:
@@ -637,10 +637,39 @@ class TestProblemasYCLI(unittest.TestCase):
                 celdas[nombre[len("%%writefile "):]] = resto
         self.assertEqual(celdas["demostrador.py"].rstrip("\n"), (RAIZ / "demostrador.py").read_text(encoding="utf-8").rstrip("\n"),
                          "colab/Demostrador_Colab.ipynb está desactualizado: ejecuta  python tools/generar_notebook.py")
-        for f in sorted((RAIZ / "problemas").glob("facil_*.json")):
-            self.assertEqual(celdas["problemas/" + f.name].rstrip("\n"), f.read_text(encoding="utf-8").rstrip("\n"), f.name)
-        ast = __import__("ast")
-        ast.parse(celdas["demostrador.py"])      # el código incrustado es Python válido
+        __import__("ast").parse(celdas["demostrador.py"])      # el código incrustado es Python válido
+        todo = "".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code" and not "".join(c["source"]).startswith("%%writefile"))
+        self.assertNotIn("problemas/", todo)                      # ninguna celda depende de archivos auxiliares
+        self.assertIn("--problema par_mayor", todo)
+
+    def test_problemas_incluidos_coinciden_con_los_archivos(self):
+        for nombre, f in (("par_mayor", "facil_par_mayor.json"), ("escape_schwarzschild", "facil_velocidad_escape_schwarzschild.json")):
+            archivo = json.loads((RAIZ / "problemas" / f).read_text(encoding="utf-8"))
+            self.assertEqual(d.PROBLEMAS_INCLUIDOS[nombre], archivo, nombre)
+
+    def test_problema_por_nombre_o_por_ruta_inexistente(self):
+        """Caso real: `problemas/facil_par_mayor.json` no existía en Colab y el programa terminaba con un traceback."""
+        a = d.construir_parser().parse_args(["resolver", "--problema", "par_mayor"])
+        self.assertEqual(d.cargar_problema(a)["backend"], "lean")
+        with tempfile.TemporaryDirectory() as td:
+            cwd = os.getcwd()
+            os.chdir(td)
+            try:
+                a = d.construir_parser().parse_args(["resolver", "--problema", "problemas/facil_par_mayor.json"])
+                self.assertEqual(d.cargar_problema(a)["id"], "par_mayor")           # el archivo no existe: se usa el incluido
+                a = d.construir_parser().parse_args(["resolver", "--problema", "problemas/facil_velocidad_escape_schwarzschild.json"])
+                self.assertEqual(d.cargar_problema(a)["backend"], "sympy")
+                a = d.construir_parser().parse_args(["resolver", "--problema", "no_existe.json"])
+                with self.assertRaises(SystemExit) as cm:
+                    d.cargar_problema(a)
+                msg = str(cm.exception)
+                self.assertIn("par_mayor", msg)
+                self.assertIn("--enunciado", msg)
+                (Path(td) / "mio.json").write_text(json.dumps({"enunciado": "  x  ", "backend": "sympy"}), encoding="utf-8")
+                a = d.construir_parser().parse_args(["resolver", "--problema", "mio.json"])
+                self.assertEqual((d.cargar_problema(a)["id"], d.cargar_problema(a)["enunciado"]), ("mio", "x"))   # un archivo real tiene prioridad
+            finally:
+                os.chdir(cwd)
 
     def test_cli_estado(self):
         with tempfile.TemporaryDirectory() as td:

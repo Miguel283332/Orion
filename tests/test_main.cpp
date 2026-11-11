@@ -7,6 +7,7 @@
 #include <set>
 
 #include "demo/engine.hpp"
+#include "demo/problemas.hpp"
 
 using namespace demo;
 
@@ -147,6 +148,16 @@ static void t_mensajes_reales() {
     CHECK(std::find(alts.begin(), alts.end(), "exact ⟨2 * n + 2, by omega⟩") != alts.end(), "testigo 2 * n + 2 entre las alternativas automáticas");
     CHECK(std::set<std::string>(alts.begin(), alts.end()).size() == alts.size() && v.testigos_auto("theorem t (n : Nat) : n = n := by").empty(), "sin duplicados; sin ∃ no hay testigos");
     CHECK(v.testigos_auto("theorem t : ∃ m : Nat, m > 3 := by")[0] == "exact ⟨0, by omega⟩", "sin variables: constantes");
+}
+
+static void t_problemas() {
+    auto cargar = [](const char* f) { return json::parse(leer_archivo(fs::path(TESTS) / ".." / "problemas" / f)); };
+    CHECK(problemas_incluidos()["par_mayor"] == cargar("facil_par_mayor.json"), "par_mayor incluido == archivo JSON");
+    CHECK(problemas_incluidos()["escape_schwarzschild"] == cargar("facil_velocidad_escape_schwarzschild.json"), "escape_schwarzschild incluido == archivo JSON");
+    // caso real: la ruta del archivo no existe pero el problema está incluido
+    CHECK(problema_incluido("problemas/facil_par_mayor.json") && (*problema_incluido("problemas/facil_par_mayor.json"))["id"] == "par_mayor", "ruta inexistente -> problema incluido");
+    CHECK(problema_incluido("par_mayor") && problema_incluido("facil_velocidad_escape_schwarzschild.json") && !problema_incluido("no_existe.json"), "por nombre, alias y desconocido");
+    CHECK(nombres_problemas_incluidos().size() == 2, "nombres");
 }
 
 static void t_procesos() {
@@ -544,7 +555,7 @@ static void t_sympy() {
 
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
-    struct { const char* n; void (*f)(); } tests[] = {{"util", t_util}, {"codigo", t_codigo}, {"pistas", t_pistas}, {"mensajes_reales", t_mensajes_reales}, {"procesos", t_procesos}, {"lean_simulado", t_lean_simulado},
+    struct { const char* n; void (*f)(); } tests[] = {{"util", t_util}, {"codigo", t_codigo}, {"pistas", t_pistas}, {"problemas", t_problemas}, {"mensajes_reales", t_mensajes_reales}, {"procesos", t_procesos}, {"lean_simulado", t_lean_simulado},
                                                       {"motor", t_motor}, {"lemas", t_lemas}, {"sympy", t_sympy}};
     for (auto& t : tests) {
         int f0 = g_fail;

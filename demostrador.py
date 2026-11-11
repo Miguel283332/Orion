@@ -14,8 +14,9 @@ Pensado para problemas LARGOS y para poder INTERRUMPIRLO:
   * presupuesto de tiempo/intentos (--horas, --max-intentos) y parada limpia con Ctrl-C / SIGTERM.
 
 Uso:
-  python demostrador.py resolver --problema problemas/par_mayor.json
+  python demostrador.py resolver --problema par_mayor
   python demostrador.py resolver --enunciado "Demuestra que ..." --backend lean --dir mi_ejecucion
+  python demostrador.py problemas                      (lista los problemas incluidos)
   python demostrador.py estado   --dir mi_ejecucion
   python demostrador.py selftest
 """
@@ -1196,16 +1197,49 @@ def informe(directorio: Path) -> str:
     return "\n".join(out)
 
 
+# Problemas de ejemplo INCLUIDOS en el programa (no hace falta ningún archivo): --problema par_mayor
+PROBLEMAS_INCLUIDOS: Dict[str, Dict[str, str]] = {
+    "par_mayor": {
+        "id": "par_mayor",
+        "dominio": "matematicas",
+        "backend": "lean",
+        "enunciado": "Demuestra la existencia de un número natural m mayor que cualquier número natural n dado, tal que m sea además un número par."
+    },
+    "escape_schwarzschild": {
+        "id": "escape_schwarzschild",
+        "dominio": "fisica",
+        "backend": "sympy",
+        "enunciado": "Una masa m escapa de la atracción de una masa M desde una distancia r, justo con energía mecánica total cero (energía cinética + energía potencial gravitatoria -G M m / r). Deduce la velocidad de escape v_esc(r) y demuestra que a la distancia r_s = 2 G M / c^2 (el radio de Schwarzschild) la velocidad de escape vale exactamente c."
+    },
+}
+ALIAS_PROBLEMAS = {"facil_par_mayor": "par_mayor", "facil_velocidad_escape_schwarzschild": "escape_schwarzschild"}
+
+
+def problema_incluido(nombre: str) -> Optional[Dict[str, str]]:
+    """Busca un problema incluido por nombre o por la ruta de su archivo (p. ej. problemas/facil_par_mayor.json)."""
+    clave = Path(nombre).stem if nombre.endswith(".json") else nombre
+    clave = ALIAS_PROBLEMAS.get(clave, clave)
+    p = PROBLEMAS_INCLUIDOS.get(clave)
+    return dict(p) if p else None
+
+
 def cargar_problema(a: argparse.Namespace) -> Dict[str, Any]:
     if a.problema:
-        p = json.loads(Path(a.problema).read_text(encoding="utf-8"))
-        if "enunciado" not in p:
-            raise SystemExit("El archivo del problema necesita el campo 'enunciado'.")
-        p.setdefault("id", Path(a.problema).stem)
+        ruta = Path(a.problema)
+        if ruta.is_file():
+            p = json.loads(ruta.read_text(encoding="utf-8"))
+            if "enunciado" not in p:
+                raise SystemExit("El archivo del problema necesita el campo 'enunciado'.")
+            p.setdefault("id", ruta.stem)
+        else:
+            p = problema_incluido(a.problema)
+            if p is None:
+                raise SystemExit(f"No existe el archivo de problema '{a.problema}'.\nProblemas incluidos (úsalos con --problema NOMBRE): "
+                                 f"{', '.join(PROBLEMAS_INCLUIDOS)}.\nO pasa el enunciado directamente con --enunciado \"texto\".")
     elif a.enunciado:
         p = {"id": "", "enunciado": a.enunciado}
     else:
-        raise SystemExit("Indica --problema ARCHIVO.json o --enunciado \"texto\".")
+        raise SystemExit("Indica --problema ARCHIVO.json (o NOMBRE de un problema incluido) o --enunciado \"texto\".")
     p["enunciado"] = textwrap.dedent(p["enunciado"]).strip()
     p["backend"] = a.backend or p.get("backend", "lean")
     p.setdefault("dominio", "matematicas")
@@ -1270,6 +1304,7 @@ def construir_parser() -> argparse.ArgumentParser:
     r.add_argument("--semilla", type=int, default=1)
     r.add_argument("--sin-fidelidad", action="store_true", help="no comprobar con el modelo que el enunciado formal es fiel")
     r.add_argument("--reiniciar", action="store_true", help="descartar el estado guardado y empezar de cero")
+    sub.add_parser("problemas", help="listar los problemas de ejemplo incluidos")
     e = sub.add_parser("estado", help="mostrar el progreso de una ejecución")
     e.add_argument("--dir", required=True)
     sub.add_parser("selftest", help="ejecutar las pruebas (tests/test_demostrador.py)")
@@ -1285,6 +1320,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     a = construir_parser().parse_args(argv)
     if a.cmd == "resolver":
         return cmd_resolver(a)
+    if a.cmd == "problemas":
+        for k, v in PROBLEMAS_INCLUIDOS.items():
+            print(f"{k}  [{v['backend']}, {v['dominio']}]  {v['enunciado'][:110]}")
+        return 0
     if a.cmd == "estado":
         print(informe(Path(a.dir)))
         return 0

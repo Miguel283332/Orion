@@ -9,7 +9,6 @@ import json
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent.parent
-PROBLEMAS = ["facil_par_mayor.json", "facil_velocidad_escape_schwarzschild.json"]
 
 
 def md(t):
@@ -34,7 +33,7 @@ Un modelo local de **Ollama** *propone* y un verificador externo *decide*: **Lea
 Guarda el progreso tras **cada intento**: si lo interrumpes (botón de parar, desconexión, límite de tiempo) o falla,
 **volver a ejecutar la celda continúa donde se quedó**.
 
-**El código está dentro de este cuaderno** (celda *Código del demostrador*): no hace falta `git clone`. Si lo cambias, vuelve a ejecutar esa celda.
+**El código y los problemas de ejemplo están dentro de este cuaderno** (celda *Código del demostrador*): no hace falta `git clone` ni ningún otro archivo. Si lo cambias, vuelve a ejecutar esa celda.
 
 Menú *Entorno de ejecución → Cambiar tipo de entorno → GPU (T4)*.
 """),
@@ -67,13 +66,7 @@ LEAN = '/root/.elan/bin/lean'
 """),
         md("## 3. Código del demostrador\n\nEjecuta esta celda (y la siguiente) antes de resolver. Contiene el programa completo."),
         code("%%writefile demostrador.py\n" + fuente.rstrip("\n"), cellView="form" if False else None),
-        md("### Problemas de ejemplo"),
-        code("!mkdir -p problemas   # %%writefile no crea carpetas"),
-    ]
-    for nombre in PROBLEMAS:
-        celdas.append(escribir(f"problemas/{nombre}", (RAIZ / "problemas" / nombre).read_text(encoding="utf-8")))
-    celdas += [
-        code("!python demostrador.py --help | head -4"),
+        code("!python demostrador.py problemas   # lista los problemas de ejemplo (van dentro del programa, no hacen falta archivos)"),
         md("""
 ## 4. Problema fácil (matemáticas, Lean 4)
 
@@ -82,9 +75,9 @@ LEAN = '/root/.elan/bin/lean'
 - Si falla o lo interrumpes, **vuelve a ejecutar la celda**: reintenta con los contadores a cero y conserva lo ya demostrado.
 - Para empezar de cero, añade `--reiniciar`.
 """),
-        code("!python demostrador.py resolver --problema problemas/facil_par_mayor.json --modelo {MODELO} --lean {LEAN} --dir {DIR}/par_mayor"),
+        code("!python demostrador.py resolver --problema par_mayor --modelo {MODELO} --lean {LEAN} --dir {DIR}/par_mayor"),
         md("## 5. Problema fácil de física (SymPy): velocidad de escape y radio de Schwarzschild"),
-        code("!python demostrador.py resolver --problema problemas/facil_velocidad_escape_schwarzschild.json --modelo {MODELO} --dir {DIR}/escape"),
+        code("!python demostrador.py resolver --problema escape_schwarzschild --modelo {MODELO} --dir {DIR}/escape"),
         md("""
 > En física, los **criterios** de verificación los escribe el modelo antes de resolver (salen en el registro). **Revísalos**: la verificación es tan fiable como esos criterios.
 
@@ -105,11 +98,11 @@ print()
 - **Sin GPU (solo CPU)** cada llamada de un 7B tarda minutos. Para acelerar: `--num-predict 600 --num-ctx 4096` (respuestas más cortas) y/o un modelo más pequeño (`qwen2.5:3b`). Lo ideal es esperar a que se renueve la cuota de GPU: el progreso queda guardado en Drive y se reanuda.
 - En segundo plano, consultando el registro:
 """),
-        code("!nohup python demostrador.py resolver --problema problemas/facil_par_mayor.json --modelo {MODELO} --lean {LEAN} --dir {DIR}/par_mayor --horas 3 > {DIR}/par_mayor.log 2>&1 &"),
+        code("!nohup python demostrador.py resolver --problema par_mayor --modelo {MODELO} --lean {LEAN} --dir {DIR}/par_mayor --horas 3 > {DIR}/par_mayor.log 2>&1 &"),
         code("!tail -n 20 {DIR}/par_mayor.log"),
         md("""
 Los problemas con **Mathlib** (números reales, análisis...) necesitan un proyecto *lake* con Mathlib (descarga grande); después: `--lake-dir RUTA --mathlib`.
-Para añadir problemas nuevos (agujeros negros, espacio-tiempo), crea archivos `.json` en `problemas/` con `enunciado`, `backend` (`lean` o `sympy`) y `dominio`.
+Para problemas nuevos (agujeros negros, espacio-tiempo) usa `--enunciado "texto" --backend lean|sympy`, o un archivo `.json` con `enunciado`, `backend` y `dominio` (`--problema ruta.json`).
 """),
     ]
     return {"cells": celdas, "metadata": {"colab": {"provenance": []}, "kernelspec": {"name": "python3", "display_name": "Python 3"},

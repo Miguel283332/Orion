@@ -7,6 +7,7 @@
 #endif
 
 #include "demo/engine.hpp"
+#include "demo/problemas.hpp"
 
 using namespace demo;
 
@@ -21,7 +22,8 @@ static void uso() {
 R"(demostrador - problemas matemáticos y físicos con LLM local (Ollama) y verificador externo
 
 Uso:
-  demostrador resolver --problema ARCHIVO.json   [opciones]
+  demostrador resolver --problema NOMBRE|ARCHIVO.json [opciones]   (p. ej. --problema par_mayor)
+  demostrador problemas                                            (lista los problemas incluidos)
   demostrador resolver --enunciado "texto"       [opciones]
   demostrador estado --dir CARPETA
 
@@ -84,6 +86,10 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, al_senal);
     Args a = parsear(argc, argv);
     try {
+        if (a.cmd == "problemas") {
+            for (auto& [k, v] : problemas_incluidos().items()) std::cout << k << "  [" << v["backend"].get<std::string>() << ", " << v["dominio"].get<std::string>() << "]  " << recortar(v["enunciado"].get<std::string>(), 110) << std::endl;
+            return 0;
+        }
         if (a.cmd == "estado") {
             if (a.dir.empty()) { std::cerr << "falta --dir\n"; return 2; }
             std::cout << informe(a.dir) << std::endl;
@@ -92,9 +98,17 @@ int main(int argc, char** argv) {
         if (a.cmd != "resolver") { uso(); return 2; }
         json p;
         if (!a.problema.empty()) {
-            p = json::parse(leer_archivo(a.problema), nullptr, false);
-            if (p.is_discarded() || !p.is_object() || !p.contains("enunciado")) { std::cerr << "El archivo del problema necesita el campo 'enunciado'.\n"; return 2; }
-            if (!p.contains("id")) p["id"] = fs::path(a.problema).stem().string();
+            if (fs::is_regular_file(a.problema)) {
+                p = json::parse(leer_archivo(a.problema), nullptr, false);
+                if (p.is_discarded() || !p.is_object() || !p.contains("enunciado")) { std::cerr << "El archivo del problema necesita el campo 'enunciado'.\n"; return 2; }
+                if (!p.contains("id")) p["id"] = fs::path(a.problema).stem().string();
+            } else if (auto inc = problema_incluido(a.problema)) {
+                p = *inc;
+            } else {
+                std::cerr << "No existe el archivo de problema '" << a.problema << "'.\nProblemas incluidos (úsalos con --problema NOMBRE): " << join(nombres_problemas_incluidos(), ", ")
+                          << ".\nO pasa el enunciado directamente con --enunciado \"texto\".\n";
+                return 2;
+            }
         } else if (!a.enunciado.empty()) {
             p = {{"id", ""}, {"enunciado", a.enunciado}};
         } else {
