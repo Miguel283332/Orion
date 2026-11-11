@@ -464,8 +464,12 @@ const char* PRELUDIO_PY = R"PY(import sympy as sp
 from sympy import *
 
 def verificar(i, cond):
-    if not (cond is True or cond == sp.true):
-        raise AssertionError("CRITERIO_FALLA %s (el criterio debe ser una comparacion que valga True, p. ej. simplify(...) == 0)" % i)
+    if cond is True or cond == sp.true:
+        pass
+    elif cond is False or cond == sp.false:
+        raise AssertionError("CRITERIO_FALLA %s: el criterio vale False. Ojo: '==' compara la FORMA, no el valor; compara con simplify(a - b) == 0. Mira los VALORES impresos arriba." % i)
+    else:
+        raise AssertionError("CRITERIO_FALLA %s: el criterio no es booleano (vale %s). Usa una comparacion, p. ej. simplify(a - b) == 0." % (i, cond))
     print("CRITERIO_OK %s" % i)
 )PY";
 
@@ -543,7 +547,17 @@ std::string SympyVerificador::codigo(const json& estado, const std::vector<std::
     std::vector<std::string> partes = {PRELUDIO_PY, estado.value("preambulo", std::string())};
     partes.insert(partes.end(), bloques.begin(), bloques.end());
     partes.push_back(cuerpo);
-    partes.push_back("# --- criterios fijados antes de resolver ---\n" + crit);
+    std::string vals;
+    if (estado.contains("variables") && !estado["variables"].empty()) {
+        static const std::regex ident(R"(\w+)");
+        std::string lista;
+        for (auto& v : estado["variables"]) {
+            std::string n = v.get<std::string>();
+            if (std::regex_match(n, ident)) lista += (lista.empty() ? "" : ", ") + std::string("'") + n + "'";
+        }
+        if (!lista.empty()) vals = "for _n in [" + lista + "]:\n    print('VALOR', _n, '=', globals().get(_n, 'SIN DEFINIR'))\n";
+    }
+    partes.push_back("# --- criterios fijados antes de resolver ---\n" + vals + crit);
     partes.push_back("print(\"TODO_VERIFICADO\")");
     return ensamblar(partes);
 }

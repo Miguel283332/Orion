@@ -649,8 +649,12 @@ PRELUDIO_PY = '''import sympy as sp
 from sympy import *
 
 def verificar(i, cond):
-    if not (cond is True or cond == sp.true):
-        raise AssertionError("CRITERIO_FALLA %s (el criterio debe ser una comparacion que valga True, p. ej. simplify(...) == 0)" % i)
+    if cond is True or cond == sp.true:
+        pass
+    elif cond is False or cond == sp.false:
+        raise AssertionError("CRITERIO_FALLA %s: el criterio vale False. Ojo: '==' compara la FORMA, no el valor; compara con simplify(a - b) == 0. Mira los VALORES impresos arriba." % i)
+    else:
+        raise AssertionError("CRITERIO_FALLA %s: el criterio no es booleano (vale %s). Usa una comparacion, p. ej. simplify(a - b) == 0." % (i, cond))
     print("CRITERIO_OK %s" % i)
 '''
 PY_PROHIBIDO = re.compile(
@@ -719,7 +723,9 @@ class SympyVerificador(Verificador):
 
     def codigo(self, estado: Dict[str, Any], bloques: List[str], firma: str = "", cuerpo: str = "") -> str:
         crit = "\n".join(f"verificar({i + 1}, {c})" for i, c in enumerate(estado.get("criterios", [])))
-        return ensamblar(PRELUDIO_PY, estado.get("preambulo", ""), *bloques, cuerpo, "# --- criterios fijados antes de resolver ---\n" + crit,
+        nombres = [v for v in estado.get("variables", []) if re.fullmatch(r"\w+", str(v))]
+        vals = ("for _n in %r:\n    print('VALOR', _n, '=', globals().get(_n, 'SIN DEFINIR'))\n" % (nombres,)) if nombres else ""
+        return ensamblar(PRELUDIO_PY, estado.get("preambulo", ""), *bloques, cuerpo, "# --- criterios fijados antes de resolver ---\n" + vals + crit,
                          'print("TODO_VERIFICADO")')
 
     def auto(self, estado: Dict[str, Any], firma: str, bloques: List[str]) -> Optional[str]:
