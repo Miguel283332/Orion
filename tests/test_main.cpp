@@ -235,6 +235,34 @@ static void t_motor() {
         const std::string& segunda = llm.llamadas[1].usuario;
         CHECK(contains(segunda, "unknown identifier 'even'") && contains(segunda, "PISTA") && contains(segunda, "m % 2 = 0"), "la 2.ª formalización recibe el error y la pista");
     }
+    {   // un estado "fallido" se reintenta al volver a ejecutar (caso real: fallaba al instante)
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "par_mayor"}, {"acepta_contiene", {"2 * n + 2"}}}}));
+        LlmFalso llm1([&](const std::string& u, int) -> std::string {
+            return contains(u, "Traduce el siguiente problema") ? formalizar_resp("theorem t (n : Nat) : ∃ m, m > n ∧ even m := by").dump() : OK_PAR;
+        });
+        Config c = cfg_base();
+        c.formalizar = 3;
+        CHECK(r.correr(llm1, c) == 1, "agota las formalizaciones: salida 1");
+        json e = r.estado();
+        CHECK(e["estado"] == "fallido" && e["intentos_formalizar"] == 3, "estado fallido con 3 intentos");
+        CHECK(!starts_with(e["ultimo_error"].get<std::string>(), "No se pudo formalizar") && starts_with(e["error_fatal"].get<std::string>(), "No se pudo formalizar"), "sin prefijo anidado");
+        LlmFalso llm2([&](const std::string& u, int) -> std::string { return contains(u, "Traduce el siguiente problema") ? formalizar_resp().dump() : OK_PAR; });
+        CHECK(r.correr(llm2, c) == 0 && llm2.llamadas.size() >= 2 && r.log_contiene("se reintenta"), "al volver a ejecutar REINTENTA y resuelve");
+    }
+    {   // un nodo fallido se reabre pero no repite lo descartado
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "par_mayor"}, {"acepta_contiene", {"2 * n + 2"}}}}));
+        LlmFalso llm1(router({MAL_PAR, MAL_PAR, MAL_PAR}));
+        Config c = cfg_base();
+        c.profundidad = 0;
+        CHECK(r.correr(llm1, c) == 1 && r.estado()["raiz"]["estado"] == "fallido", "nodo raíz fallido");
+        LlmFalso llm2(router({MAL_PAR, OK_PAR}));
+        CHECK(r.correr(llm2, c) == 0, "se reabre y resuelve");
+        std::string errores;
+        { json est = r.estado(); for (auto& x : est["raiz"]["errores"]) errores += x.get<std::string>(); }
+        CHECK(contains(errores, "repetida"), "la demostración ya descartada se rechaza como repetida");
+    }
     {   // fidelidad
         Rig r;
         oraculo(r.t, json::array({{{"enunciado_contiene", "par_mayor"}, {"acepta_contiene", {"2 * n + 2"}}}}));

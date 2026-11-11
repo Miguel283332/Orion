@@ -20,6 +20,7 @@ public:
 private:
     void cargar(const json& problema, bool reiniciar);
     void guardar();
+    void reabrir_fallidos();
     void evento(const std::string& nombre, json datos = json::object());
     void say(const json* n, const std::string& msg);
     void presupuesto();
