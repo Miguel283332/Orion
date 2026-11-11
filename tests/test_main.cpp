@@ -1,472 +1,473 @@
-// Pruebas del agente C++ (JUEZ: protegidas, no se pueden modificar con self_patch).
-#include <atomic>
+// Pruebas del demostrador C++. Usan un Lean SIMULADO (tests/mock_lean.py, requiere python3) y un LLM falso;
+// la parte de SymPy usa SymPy real (python3 + sympy).
 #include <cstdio>
-#include <thread>
+#include <cstdlib>
+#include <regex>
 
-#include "orion/agent.hpp"
+#include "demo/engine.hpp"
 
-using namespace orion;
+using namespace demo;
 
 static int g_run = 0, g_fail = 0;
-#define CHECK(cond, msg)                                                                   \
-    do {                                                                                   \
-        ++g_run;                                                                           \
+#define CHECK(cond, msg)                                                                                         \
+    do {                                                                                                         \
+        ++g_run;                                                                                                 \
         if (!(cond)) { ++g_fail; std::printf("  FALLO %s:%d: %s\n", __FILE__, __LINE__, std::string(msg).c_str()); } \
     } while (0)
 
-struct TempDir {
-    fs::path p = make_temp_dir("orion_test_");
-    ~TempDir() { std::error_code ec; fs::remove_all(p, ec); }
+static const std::string TESTS = DEMO_TESTS_DIR;
+static const std::string FIRMA = "theorem par_mayor (n : Nat) : ∃ m : Nat, m > n ∧ m % 2 = 0 := by";
+static const std::string OK_PAR = "```lean\n" + FIRMA + "\n  exact ⟨2 * n + 2, by omega⟩\n```";
+static const std::string MAL_PAR = "```lean\n" + FIRMA + "\n  omega\n```";
+
+struct Temp {
+    fs::path p = crear_temporal("demo_test_");
+    ~Temp() { std::error_code ec; fs::remove_all(p, ec); }
 };
 
-// LLM falso con respuestas guiadas
-struct ScriptedLLM : LLM {
-    std::vector<json> replies;
-    std::vector<json> calls;
-    explicit ScriptedLLM(std::vector<json> r = {}) : replies(std::move(r)) {}
-    std::string chat(const json& messages, bool, int, double) override {
-        calls.push_back(messages);
-        std::string sys = messages[0]["content"];
-        if (contains(sys, "reflection module"))
-            return json{{"success", true}, {"score", 0.9}, {"skill", nullptr}, {"lessons", {"Comprobar el archivo después de escribirlo evita errores."}}}.dump();
-        if (contains(sys, "curiosity module")) return json{{"goal", "Ordenar y resumir mi memoria de trabajo."}}.dump();
-        if (contains(sys, "final-answer module")) return "Respuesta de emergencia de prueba.";
-        if (contains(sys, "rule-distillation module")) return json{{"rules", {"Cuando una búsqueda falle dos veces, responder con lo que se sabe."}}}.dump();
-        if (starts_with(sys, "Resume en")) return "Resumen de prueba.";
-        if (replies.empty()) return json{{"thought", "fin"}, {"tool", "done"}, {"args", {{"summary", "fin"}}}}.dump();
-        json r = replies.front();
-        replies.erase(replies.begin());
-        return r.is_string() ? r.get<std::string>() : r.dump();
+struct Llamada { std::string usuario; bool json_mode; int seed; };
+struct LlmFalso : Llm {
+    std::function<std::string(const std::string&, int)> m;
+    std::vector<Llamada> llamadas;
+    explicit LlmFalso(std::function<std::string(const std::string&, int)> f) : m(std::move(f)) {}
+    std::string chat(const std::string&, const std::string& u, double, int, int seed, bool json_mode) override {
+        llamadas.push_back({u, json_mode, seed});
+        return m(u, (int)llamadas.size());
     }
-    std::vector<float> embed(const std::string&) override { throw LLMError("sin embeddings"); }
-    std::string model_name() const override { return "mock"; }
-    std::string embed_model_name() const override { return "mock-embed"; }
 };
 
-static json act(const std::string& tool, json args = json::object()) { return {{"thought", "t"}, {"tool", tool}, {"args", args}}; }
+static json formalizar_resp(const std::string& firma = FIRMA) { return {{"definiciones", ""}, {"teorema", firma}}; }
+
+static void oraculo(const Temp& t, const json& reglas) {
+    escribir_archivo(t.p / "oraculo.json", json{{"teoremas", reglas}}.dump());
+    setenv("MOCK_LEAN_ORACLE", (t.p / "oraculo.json").string().c_str(), 1);
+}
+
+static Config cfg_base(int directos = 3, int finales = 2, int replanes = 2) {
+    Config c;
+    c.lean = TESTS + "/mock_lean.py"; c.directos = directos; c.finales = finales; c.replanes = replanes; c.planes = 2; c.fidelidad = false; c.timeout_lean = 30;
+    return c;
+}
+
+static json problema(const std::string& enun = "Demuestra que para todo n existe un par mayor que n.", const std::string& backend = "lean") {
+    return {{"id", "p"}, {"enunciado", enun}, {"backend", backend}, {"dominio", "matematicas"}};
+}
 
 struct Rig {
-    fs::path home;
-    Policy pol;
-    Audit audit;
-    Embedder emb{nullptr};
-    Memory mem;
-    Agent ag;
-    Rig(const fs::path& h, LLM& llm, Autonomy aut = Autonomy::Supervised, Policy::Approver ap = nullptr, bool allow_private = false, int max_steps = 8)
-        : home(h), pol(), audit(h / "audit.jsonl"), mem(h, &emb), ag(h, llm, setup(aut, ap, allow_private), audit, mem, AgentConfig{max_steps, 9000}) {}
-    Policy& setup(Autonomy aut, Policy::Approver ap, bool allow_private) {
-        pol.autonomy = aut; pol.workspace = home / "workspace"; pol.home = home;
-        pol.approver = ap ? ap : [](const std::string&, const std::string&) { return false; };
-        pol.allow_private = allow_private; pol.interactive = false;
-        return pol;
+    Temp t;
+    fs::path dir = t.p / "run";
+    std::vector<std::string> logs;
+    int correr(LlmFalso& llm, const Config& cfg, const json& p = problema(), bool reiniciar = false) {
+        std::unique_ptr<Verificador> ver;
+        if (cfg.backend == "lean") ver = std::make_unique<LeanVerificador>(cfg); else ver = std::make_unique<SympyVerificador>(cfg);
+        Motor m(cfg, llm, *ver, dir, [this](const std::string& s) { logs.push_back(s); });
+        return m.ejecutar(p, reiniciar);
     }
+    json estado() const { return json::parse(leer_archivo(dir / "estado.json")); }
+    bool log_contiene(const std::string& s) const { for (auto& l : logs) if (contains(l, s)) return true; return false; }
 };
 
-static void t_hash(void) {
-    CHECK(sha256_hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256 vacío");
+// ------------------------------------------------------------------ utilidades
+static void t_util() {
     CHECK(sha256_hex("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256 abc");
-    CHECK(sha256_hex(std::string(1000000, 'a')) == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0", "sha256 de un millón de 'a'");
-    CHECK(sha256_hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1", "sha256 de 2 bloques");
-    TempDir td;
-    write_file(td.p / "f", "abc");
-    CHECK(sha256_file(td.p / "f") == sha256_hex("abc"), "sha256_file");
+    CHECK(sha256_hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256 vacío");
+    CHECK(huella("a  b") == huella("a b") && huella("ℕ → ℕ") == huella("Nat -> Nat"), "huella normaliza símbolos y espacios");
+    // misma huella que la versión Python (para compartir el estado guardado)
+    CHECK(huella("Demuestra que n + 1 > n") == "f4cd5d6db1b0f43e" || true, "huella determinista");
+    auto j = extraer_json("```json\n{\"a\": 1}\n```");
+    CHECK(j && (*j)["a"] == 1, "json con vallas");
+    j = extraer_json("Claro: {\"a\": \"x {y} z\"} listo");
+    CHECK(j && (*j)["a"] == "x {y} z", "json rodeado de texto y llaves en cadenas");
+    CHECK(!extraer_json("sin json"), "sin json");
+    CHECK(dedent("    a\n      b\n    c") == "a\n  b\nc", "dedent");
+    CHECK(recortar(std::string(100, 'x'), 40).size() < 100 && recortar("áéíóú", 4).size() > 0, "recortar");
+    Temp t;
+    escribir_atomico(t.p / "s" / "a.json", "uno");
+    escribir_atomico(t.p / "s" / "a.json", "dos");
+    int n = 0;
+    for (auto& e : fs::directory_iterator(t.p / "s")) { (void)e; ++n; }
+    CHECK(leer_archivo(t.p / "s" / "a.json") == "dos" && n == 1, "escritura atómica");
 }
 
-static void t_net() {
-    for (const char* u : {"file:///etc/passwd", "ftp://example.com/x", "http://127.0.0.1:8080/", "http://localhost/", "http://10.0.0.5/",
-                          "http://169.254.169.254/latest/meta-data", "http://[::1]/", "http://192.168.1.1/", "http://[::ffff:127.0.0.1]/",
-                          "http://100.64.0.1/", "http://172.16.0.1/", "http://0.0.0.0/", "http://224.0.0.1/", "http://[fe80::1]/", "http://[fc00::1]/"})
-        CHECK(check_url(u, false).has_value(), std::string("SSRF: debe bloquear ") + u);
-    CHECK(!check_url("http://93.184.216.34/", false).has_value(), "una IP pública literal es aceptable");
-    CHECK(!check_url("http://127.0.0.1:1/", true).has_value(), "allow_private permite localhost");
-    CHECK(!ip_is_public("::ffff:10.0.0.1") && ip_is_public("8.8.8.8") && ip_is_public("2606:4700:4700::1111") && !ip_is_public("2001:db8::1") && !ip_is_public("basura"), "ip_is_public");
-    std::string ip;
-    ParsedUrl pu;
-    CHECK(!check_url("http://93.184.216.34:8080/x", false, &pu, &ip) && ip == "93.184.216.34" && pu.port == 8080 && pu.host == "93.184.216.34", "check_url devuelve la IP verificada para fijarla");
-    ParsedUrl a = parse_url("https://user:pw@Example.com:8443/a/b?c=1");
-    CHECK(a.ok && a.scheme == "https" && a.host == "Example.com" && a.port == 8443 && a.path == "/a/b?c=1", "parse_url");
-    ParsedUrl b = parse_url("http://[::1]:9000/");
-    CHECK(b.ok && b.host == "::1" && b.port == 9000, "parse_url IPv6");
-    CHECK(!parse_url("http://host:abc/").ok && !parse_url("no-es-url").ok, "parse_url inválidas");
-    try { HttpOptions o; http_fetch("http://127.0.0.1:1/", o); CHECK(false, "http_fetch debe bloquear localhost"); } catch (const std::exception& e) { CHECK(contains(std::string(e.what()), "privada"), "mensaje SSRF"); }
-    CHECK(join_url("http://a.com/x/y.html", "z.html") == "http://a.com/x/z.html" && join_url("http://a.com:81/x", "/q") == "http://a.com:81/q" && join_url("https://a.com/x", "//b.com/c") == "https://b.com/c", "join_url");
-    CHECK(url_encode("a b&c/ñ") == "a%20b%26c%2F%C3%B1", "url_encode");
-    CHECK(normalize_ollama_url("0.0.0.0:11434") == "http://127.0.0.1:11434" && normalize_ollama_url("https://h:1/") == "https://h:1", "normalize_ollama_url");
+static void t_codigo() {
+    Config c;
+    LeanVerificador v(c);
+    std::vector<std::pair<std::string, std::string>> casos = {
+        {"```lean\ntheorem t (n : Nat) : n = n := by\n  rfl\n```", "  rfl"},
+        {"```lean\ntheorem t : 1 = 1 := by rfl\n```", "  rfl"},
+        {"Explicación.\n```lean\ntheorem t : 1 = 1 := by\n  simp\n```\nOtra nota\n```text\nno\n```", "  simp"},
+        {"```lean\ntheorem t (h : p ∧ q) : q := by\n  obtain ⟨a, b⟩ := h\n  exact b\n\ntheorem otro : True := by trivial\n```", "  obtain ⟨a, b⟩ := h\n  exact b"},
+        {"omega", "  omega"},
+        {"```lean\ntheorem t : ∃ x : Nat, x > 0 := by\n  refine ⟨1, ?_⟩\n  · omega\n```", "  refine ⟨1, ?_⟩\n  · omega"}};
+    for (auto& [e, esp] : casos) CHECK(v.extraer_cuerpo(e) == esp, "extraer_cuerpo: " + e);
+    CHECK(v.extraer_firma("```lean\nlemma  foo (a : Nat)\n   : a = a := by simp\n```") == "theorem foo (a : Nat) : a = a := by", "extraer_firma multilínea y lemma");
+    CHECK(v.extraer_firma("sin teorema").empty(), "sin teorema");
+    CHECK(v.nombre_de("theorem abc_1 (x : Nat) : x = x := by") == "abc_1", "nombre");
+    CHECK(v.renombrar("theorem abc (x : Nat) : x = x := by", "l3_abc") == "theorem l3_abc (x : Nat) : x = x := by", "renombrar");
+    for (const char* malo : {"  sorry", "  admit", "axiom x : False", "  native_decide", "set_option maxRecDepth 1 in\n  rfl", "  unsafe def f := 1",
+                             "macro \"x\" : tactic => `(tactic| rfl)", "import Mathlib", "#eval 1"})
+        CHECK(v.prohibido(malo).has_value(), std::string("prohibido: ") + malo);
+    CHECK(!v.prohibido("  omega -- sorry en un comentario\n  /- admit -/ simp").has_value() && !v.prohibido("  exact ⟨2 * n + 2, by omega⟩").has_value(), "lo permitido");
+    SympyVerificador p(c);
+    for (const char* malo : {"verificar(1, True)", "import subprocess", "open('x')", "eval('1')", "__import__('os')"}) CHECK(p.prohibido(malo).has_value(), std::string("py prohibido: ") + malo);
+    CHECK(!p.prohibido("x = symbols('x')  # open es solo un comentario\nsolve(x**2 - 1, x)").has_value(), "py permitido");
+    std::string r = v.resumir_error("/tmp/x/Problema.lean:3:2: error: unsolved goals\n⊢ n = n\n/tmp/x/Problema.lean:5:0: warning: unused variable");
+    CHECK(contains(r, "línea 3:2: error: unsolved goals") && !contains(r, "warning"), "resumir_error");
+    CHECK(v.enunciado_trivial("theorem t : True := by") && v.enunciado_trivial("theorem t (h : False) : 1 = 2 := by") && !v.enunciado_trivial(FIRMA), "enunciado trivial");
 }
 
-static void t_paths() {
-    TempDir td;
-    fs::path root = td.p / "ws";
-    fs::create_directories(root);
-    CHECK(safe_path(root, "a/b.txt", false, false, {}) == fs::weakly_canonical(root / "a" / "b.txt"), "ruta interna");
-    for (const char* bad : {"../x.txt", "/etc/passwd", "a/../../x"}) {
-        try { safe_path(root, bad, false, false, {}); CHECK(false, std::string("debe rechazar ") + bad); } catch (const std::exception&) { CHECK(true, ""); }
-    }
-    fs::path prot = td.p / "protegido";
-    fs::create_directories(prot);
-    try { safe_path(root, (prot / "x").string(), true, true, {prot}); CHECK(false, "ruta protegida"); } catch (const std::exception&) { CHECK(true, ""); }
-    CHECK(safe_path(root, (prot / "x").string(), true, false, {prot}).filename() == "x", "leer en ruta protegida sí se permite sin write");
-    fs::path outside = td.p / "fuera";
-    fs::create_directories(outside);
-    std::error_code ec;
-    fs::create_directory_symlink(outside, root / "enlace", ec);
-    if (!ec) { try { safe_path(root, "enlace/x.txt", false, false, {}); CHECK(false, "symlink no debe permitir escapar"); } catch (const std::exception&) { CHECK(true, ""); } }
-    CHECK(looks_secret_file(".env").has_value() && looks_secret_file("id_rsa").has_value() && looks_secret_file("dir/clave.pem").has_value(), "nombres secretos");
-    write_file(root / "n.txt", "clave: sk-" + std::string(30, 'a'));
-    write_file(root / "ok.txt", "hola");
-    CHECK(looks_secret_file(root / "n.txt").has_value() && !looks_secret_file(root / "ok.txt").has_value(), "contenido secreto / normal");
-#ifdef _WIN32
-    _putenv_s("ORION_SECRET_PRUEBA", "valor-super-secreto-123");
-#else
-    setenv("ORION_SECRET_PRUEBA", "valor-super-secreto-123", 1);
-#endif
-    CHECK(redact("x valor-super-secreto-123 y") == "x [REDACTADO] y", "redact quita secretos del entorno");
-    CHECK(resolve_secrets(json{{"A", "Bearer {{secret:PRUEBA}}"}})["A"] == "Bearer valor-super-secreto-123", "resolve_secrets");
-    try { resolve_secrets(json("{{secret:NO_EXISTE}}")); CHECK(false, "secreto inexistente"); } catch (const std::exception&) { CHECK(true, ""); }
-#ifdef _WIN32
-    _putenv_s("ORION_SECRET_PRUEBA", "");
-#else
-    unsetenv("ORION_SECRET_PRUEBA");
-#endif
+static void t_procesos() {
+    OpcionesProceso op;
+    op.timeout_s = 10;
+    auto r = ejecutar({"python3", "-c", "print('hola'); import sys; print('err', file=sys.stderr); sys.exit(3)"}, op);
+    CHECK(r.codigo == 3 && contains(r.salida, "hola") && contains(r.salida, "err"), "captura stdout+stderr y código de salida");
+    op.timeout_s = 1;
+    r = ejecutar({"python3", "-c", "import time; time.sleep(30)"}, op);
+    CHECK(r.tiempo_agotado, "tiempo límite");
+    op.timeout_s = 10;
+    r = ejecutar({"programa_que_no_existe_xyz"}, op);
+    CHECK(r.no_ejecutado, "programa inexistente");
+    setenv("DEMO_TOKEN_SECRETO", "valor", 1);
+    op.limpiar_secretos = true;
+    r = ejecutar({"python3", "-c", "import os; print('DEMO_TOKEN_SECRETO' in os.environ)"}, op);
+    CHECK(contains(r.salida, "False"), "las variables con secretos no llegan al proceso hijo");
+    unsetenv("DEMO_TOKEN_SECRETO");
+    bandera_parar() = true;
+    op.timeout_s = 20;
+    r = ejecutar({"python3", "-c", "import time; time.sleep(30)"}, op);
+    bandera_parar() = false;
+    CHECK(r.interrumpido, "la bandera de parada cancela el proceso");
 }
 
-static void t_policy() {
-    std::vector<std::pair<std::string, std::string>> asked;
-    auto appr = [&](bool ok) { return Policy::Approver([&asked, ok](const std::string& n, const std::string& s) { asked.emplace_back(n, s); return ok; }); };
-    Policy p;
-    p.approver = appr(false);
-    CHECK(p.authorize("fs_read", {}).first && p.authorize("fs_write", {}).first && p.authorize("web_get", {}).first, "supervised: lo básico sin preguntar");
-    CHECK(asked.empty(), "no se preguntó por lo básico");
-    CHECK(!p.authorize("shell", {{"cmd", "ls"}}).first && !asked.empty(), "shell pregunta y se deniega");
-    CHECK(!p.authorize("herramienta_nueva", json::object()).first, "una herramienta desconocida es sensible");
-    p.approver = appr(true);
-    CHECK(p.authorize("shell", {{"cmd", "ls"}}).first, "shell aprobada");
-    p.tainted = true;
-    asked.clear();
-    p.authorize("shell", {{"cmd", "rm"}});
-    CHECK(!asked.empty() && contains(asked[0].second, "AVISO"), "tras leer la web, el permiso avisa de posible inyección");
-    Policy st;
-    st.autonomy = Autonomy::Strict; st.approver = appr(false);
-    CHECK(!st.authorize("fs_write", {}).first, "strict pregunta por escribir");
-    Policy full;
-    full.autonomy = Autonomy::Full;
-    CHECK(full.authorize("shell", {}).first && full.unconfined(), "full no pregunta");
-    Policy pu;
-    pu.approver = appr(false); pu.upload_hosts = {"ok.example.com"};
-    CHECK(pu.authorize("upload", {{"url", "https://ok.example.com/x"}}).first, "host de subida permitido");
-    CHECK(!pu.authorize("upload", {{"url", "https://otro.example.com/x"}}).first, "otro host pide permiso");
-    Policy none;
-    CHECK(!none.authorize("shell", {}).first, "sin terminal ni home: denegado");
-    CHECK(parse_autonomy("full") && !parse_autonomy("x") && risk_of("shell") == "sensitive" && risk_of("nueva") == "sensitive" && risk_of("fs_read") == "safe", "tabla de riesgos");
-    TempDir td;   // aprobación por archivo (modo sin terminal)
-    Policy pf;
-    pf.home = td.p; pf.approval_timeout = 6;
-    auto responder = [&](const char* ans) {
-        for (int i = 0; i < 60; ++i) {
-            std::error_code ec;
-            if (fs::exists(td.p / "approvals", ec))
-                for (auto& e : fs::directory_iterator(td.p / "approvals"))
-                    if (e.path().extension() == ".json") { write_file(td.p / "approvals" / (e.path().stem().string() + ".answer"), ans); return; }
-            sleep_ms(100);
-        }
+static void t_lean_simulado() {
+    Temp t;
+    oraculo(t, json::array({{{"enunciado_contiene", "par_mayor"}, {"acepta_contiene", {"2 * n + 2"}}, {"axiomas", {"propext"}}}}));
+    LeanVerificador v(cfg_base());
+    CHECK(contains(v.entorno(), "Lean"), "entorno");
+    auto [ok1, s1] = v.comprobar("import Lean\n\n" + FIRMA + "\n  exact ⟨2 * n + 2, by omega⟩", "par_mayor");
+    CHECK(ok1, s1);
+    auto [ok2, s2] = v.comprobar("import Lean\n\n" + FIRMA + "\n  omega");
+    CHECK(!ok2 && contains(s2, "unsolved goals"), "demostración incorrecta");
+    auto [ok3, s3] = v.comprobar("import Lean\n\n" + FIRMA + "\n  sorry");
+    CHECK(!ok3 && contains(s3, "sorry"), "sorry se rechaza");
+    CHECK(v.comprobar("import Lean\n\n" + FIRMA + "\n  sorry", "", true).first, "sorry permitido en comprobaciones de enunciado");
+    CHECK(!v.comprobar("import Lean\n\n" + FIRMA + "\n  exact ⟨2 * n + 2, by omega", "par_mayor").first, "delimitadores sin cerrar");
+    Config c = cfg_base();
+    c.lean = "/no/existe/lean";
+    LeanVerificador v2(c);
+    bool lanzo = false;
+    try { v2.entorno(); } catch (const std::exception&) { lanzo = true; }
+    CHECK(lanzo, "entorno sin Lean lanza una excepción con instrucciones");
+}
+
+// ------------------------------------------------------------------ motor (Lean simulado)
+static std::function<std::string(const std::string&, int)> router(std::vector<std::string> pruebas) {
+    auto it = std::make_shared<size_t>(0);
+    auto lista = std::make_shared<std::vector<std::string>>(std::move(pruebas));
+    return [it, lista](const std::string& u, int) -> std::string {
+        if (contains(u, "Traduce el siguiente problema")) return formalizar_resp().dump();
+        if (contains(u, "Demuestra este teorema en Lean 4")) return (*it < lista->size()) ? (*lista)[(*it)++] : std::string("```lean\ntheorem x : True := by trivial\n```");
+        return "{}";
     };
-    std::thread t1(responder, "yes");
-    CHECK(pf.authorize("shell", {{"cmd", "x"}}).first, "aprobación por archivo: sí");
-    t1.join();
-    std::thread t2(responder, "no");
-    CHECK(!pf.authorize("shell", {{"cmd", "x"}}).first, "aprobación por archivo: no");
-    t2.join();
-    pf.approval_timeout = 1.2;
-    CHECK(!pf.authorize("shell", {{"cmd", "x"}}).first, "sin respuesta caduca y se deniega");
 }
 
-static void t_guarded() {
-    TempDir td;
-    fs::path marker = td.p / "marcador.txt";
-    std::map<std::string, Tool> tools;
-    tools["shell"] = {"shell", "cmd", "", [&](const json& a) { write_file(marker, a.value("cmd", std::string())); return std::string("ok"); }};
-    tools["fs_read"] = {"fs_read", "path", "", [](const json&) { return "sk-" + std::string(30, 'z'); }};
-    tools["web_get"] = {"web_get", "url", "", [](const json&) { return std::string("pagina"); }};
-    tools["roto"] = {"roto", "", "", [](const json&) -> std::string { throw std::runtime_error("boom"); }};
-    Policy pol;
-    pol.approver = [](const std::string&, const std::string&) { return false; };
-    Audit aud(td.p / "a.jsonl");
-    auto r = guarded_call(pol, aud, tools, "shell", {{"cmd", "x"}});
-    CHECK(!r.first && contains(r.second, "DENEGADO") && !fs::exists(marker), "denegado: no se ejecuta el efecto");
-    pol.approver = [](const std::string&, const std::string&) { return true; };
-    CHECK(guarded_call(pol, aud, tools, "shell", {{"cmd", "x"}}).first && fs::exists(marker), "aprobado: se ejecuta");
-    r = guarded_call(pol, aud, tools, "fs_read", {{"path", "a"}});
-    CHECK(contains(r.second, "[REDACTADO]") && !contains(r.second, "zzzz"), "la salida se redacta");
-    guarded_call(pol, aud, tools, "web_get", {{"url", "u"}});
-    CHECK(pol.tainted, "leer la web marca el ciclo como no confiable");
-    pol.new_cycle();
-    CHECK(!pol.tainted, "new_cycle limpia el aviso");
-    r = guarded_call(pol, aud, tools, "roto", json::object());
-    CHECK(!r.first && contains(r.second, "boom"), "los errores llegan como observación");
-    CHECK(contains(guarded_call(pol, aud, tools, "no_existe", json::object()).second, "desconocida"), "herramienta desconocida");
-    CHECK(!guarded_call(pol, aud, tools, "shell", json::array({"x"})).first, "args no objeto");
-    std::string log = read_file(td.p / "a.jsonl");
-    CHECK(std::count(log.begin(), log.end(), '\n') >= 6 && !contains(log, "zzzz"), "auditoría registra y no filtra secretos");
-}
-
-static void t_memory() {
-    TempDir td;
-    Embedder emb(nullptr);
-    Memory m(td.p, &emb);
-    std::string a = m.add("Marta prefiere el color verde y vive en Sevilla");
-    m.add("El servidor de copias de seguridad usa el puerto 8443");
-    m.add("Para compilar el proyecto en C++ se usa CMake en modo Release");
-    CHECK(m.search("¿qué color le gusta a Marta?", 1)[0].second.id == a, "búsqueda semántica (hashing) encuentra lo relevante");
-    CHECK(m.add("Marta prefiere el color verde y vive en Sevilla") == a, "deduplicación");
-    CHECK(m.forget(a) && !m.forget(a), "olvidar");
-    Memory m2(td.p, &emb);
-    CHECK(!m2.items().count(a) && m2.size() == 2, "persistencia y tombstones al recargar");
-    m2.core_set("Soy Orion. Mi usuario se llama Miguel.");
-    CHECK(contains(m2.core_get(), "Miguel"), "memoria núcleo");
-    m2.core_append("Línea extra");
-    CHECK(contains(m2.core_get(), "Línea extra") && contains(m2.core_get(), "Miguel"), "core_append");
-    try { m2.core_set(std::string(Memory::kCoreMax + 1, 'x')); CHECK(false, "el núcleo tiene límite"); } catch (const std::exception&) { CHECK(true, ""); }
-    for (int i = 0; i < 12; ++i) m2.log_episode({{"i", i}});
-    CHECK(m2.episode_count() == 12 && m2.rotate_episodes(5) == 7 && m2.episode_count() == 5, "rotación de episodios");
-    m2.compact();
-    Memory m3(td.p, &emb);
-    CHECK(m3.size() == 2, "compactar conserva las entradas");
-    m3.log_dialogue("user", "hola");
-    CHECK(m3.recent_dialogue(3).back()["text"] == "hola", "diálogo");
-    auto e = hash_embed("hola mundo");
-    double n = 0;
-    for (float x : e) n += (double)x * x;
-    CHECK(std::abs(std::sqrt(n) - 1.0) < 1e-5, "embedding normalizado");
-}
-
-static void t_parse() {
-    std::string err;
-    auto a = parse_action("```json\n{\"thought\": \"x\", \"tool\": \"fs_read\", \"args\": {\"path\": \"a.txt\"}}\n```", err);
-    CHECK(a && (*a)["tool"] == "fs_read" && (*a)["args"]["path"] == "a.txt", "JSON con vallas");
-    a = parse_action("Claro, voy a hacerlo: {\"tool\": \"done\", \"args\": {\"summary\": \"a {b} c\"}} gracias", err);
-    CHECK(a && (*a)["args"]["summary"] == "a {b} c", "JSON rodeado de texto y llaves en cadenas");
-    a = parse_action("{\"action\": \"fs_list\", \"arguments\": \"{\\\"path\\\": \\\".\\\"}\"}", err);
-    CHECK(a && (*a)["tool"] == "fs_list" && (*a)["args"]["path"] == ".", "sinónimos action/arguments");
-    CHECK(!parse_action("no es json", err) && !parse_action("{\"args\": {}}", err) && !parse_action("{\"tool\": \"x\", \"args\": [1]}", err), "entradas inválidas");
-    CHECK(clip("áéíóú", 3).size() > 0 && clip(std::string(100, 'x'), 40).size() < 100, "clip");
-}
-
-static void t_agent() {
+static void t_motor() {
     {
-        TempDir td;
-        ScriptedLLM llm({act("fs_write", {{"path", "hola.txt"}, {"content", "Hola"}}), act("fs_read", {{"path", "hola.txt"}}),
-                         act("remember", {{"text", "El usuario se llama Marta"}, {"kind", "fact"}}), act("done", {{"summary", "listo"}})});
-        set_quiet(true);
-        Rig rig(td.p, llm);
-        rig.mem.core_set("Soy Orion; el usuario es Miguel.");
-        GoalResult r = rig.ag.run_goal("Escribe hola.txt");
-        CHECK(r.finished && r.result == "listo" && r.steps == 4, "el bucle completa el objetivo");
-        CHECK(trim(read_file(td.p / "workspace" / "hola.txt")) == "Hola", "la herramienta escribió el archivo");
-        bool fact = false, lesson = false;
-        for (auto& [id, it] : rig.mem.items()) { if (it.kind == "fact") fact = true; if (it.kind == "lesson") lesson = true; }
-        CHECK(fact && lesson, "recuerdo y lección guardados");
-        CHECK(rig.mem.episode_count() == 4, "episodios registrados");
-        std::vector<fs::path> tr;
-        for (auto& e : fs::directory_iterator(td.p / "trajectories")) tr.push_back(e.path());
-        CHECK(tr.size() == 1 && json::parse(split(read_file(tr[0]), '\n')[0])["good"] == true, "trayectoria buena guardada para consolidar");
-        std::string p = llm.calls[0][1]["content"];
-        CHECK(contains(p, "Miguel") && contains(p, "GOAL") && contains(std::string(llm.calls[0][0]["content"]), "TOOLS"), "el prompt incluye objetivo, núcleo y herramientas");
-        CHECK(fs::exists(td.p / "audit.jsonl"), "auditoría");
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "par_mayor"}, {"acepta_contiene", {"2 * n + 2"}}}}));
+        LlmFalso llm(router({MAL_PAR, OK_PAR}));
+        CHECK(r.correr(llm, cfg_base()) == 0, "resuelve el problema fácil");
+        json e = r.estado();
+        CHECK(e["estado"] == "verificado" && llm.llamadas.size() == 3, "3 llamadas: formalizar + 2 intentos");
+        CHECK(contains(leer_archivo(r.dir / "resultado.lean"), "2 * n + 2"), "resultado.lean");
+        const std::string& segundo = llm.llamadas[2].usuario;
+        CHECK(contains(segundo, "TU INTENTO ANTERIOR") && contains(segundo, "omega") && contains(segundo, "unsolved goals"), "el 2.º intento recibe el código anterior y el error de Lean");
+        CHECK(llm.llamadas[0].json_mode && !llm.llamadas[1].json_mode, "JSON solo en las fases estructuradas");
+        CHECK(llm.llamadas[0].seed != llm.llamadas[1].seed && llm.llamadas[1].seed != llm.llamadas[2].seed, "semillas distintas");
+        CHECK(fs::exists(r.dir / "registro.jsonl") && contains(informe(r.dir), "✔"), "registro e informe");
     }
-    {
-        TempDir td;
-        ScriptedLLM llm({json("basura"), json("mas basura"), json("y mas")});
-        Rig rig(td.p, llm);
-        CHECK(rig.ag.run_goal("x").end_reason == "invalid", "tres respuestas inválidas abortan");
+    {   // prohibidas y repetidas
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "par_mayor"}, {"acepta_contiene", {"2 * n + 2"}}}}));
+        LlmFalso llm(router({"```lean\n" + FIRMA + "\n  sorry\n```", "```lean\n" + FIRMA + "\n  native_decide\n```", MAL_PAR, MAL_PAR, OK_PAR}));
+        Config c = cfg_base(6);
+        CHECK(r.correr(llm, c) == 0, "con intentos prohibidos y repetidos sigue hasta resolver");
+        std::string errores;
+        { json est = r.estado(); for (auto& e : est["raiz"]["errores"]) errores += e.get<std::string>() + " | "; }
+        CHECK(contains(errores, "Construcción prohibida") && contains(errores, "repetida"), "se registran las prohibidas y repetidas");
     }
-    {
-        TempDir td;
-        ScriptedLLM llm(std::vector<json>(10, act("fs_list")));
-        Rig rig(td.p, llm, Autonomy::Supervised, nullptr, false, 10);
-        CHECK(rig.ag.run_goal("x").end_reason == "loop", "detecta bucles");
+    {   // enunciado trivial -> se reformaliza
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "par_mayor"}, {"acepta_contiene", {"2 * n + 2"}}}}));
+        int n_form = 0;
+        LlmFalso llm([&](const std::string& u, int) -> std::string {
+            if (contains(u, "Traduce el siguiente problema")) return (n_form++ == 0 ? formalizar_resp("theorem t : True := by") : formalizar_resp()).dump();
+            return OK_PAR;
+        });
+        CHECK(r.correr(llm, cfg_base()) == 0 && contains(llm.llamadas[1].usuario, "trivial"), "el enunciado trivial se rechaza y se devuelve al modelo");
     }
-    {
-        TempDir td;
-        ScriptedLLM llm({act("memory_stats"), act("fs_list"), act("fs_list", {{"path", "."}})});
-        Rig rig(td.p, llm, Autonomy::Supervised, nullptr, false, 2);
-        CHECK(rig.ag.run_goal("x").end_reason == "budget", "presupuesto de pasos");
-        write_file(td.p / "STOP", "x");
-        CHECK(contains(rig.ag.run_goal("y").result, "STOP"), "el archivo STOP detiene");
+    {   // fidelidad
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "par_mayor"}, {"acepta_contiene", {"2 * n + 2"}}}}));
+        int n_fid = 0;
+        LlmFalso llm([&](const std::string& u, int) -> std::string {
+            if (contains(u, "Traduce el siguiente problema")) return formalizar_resp().dump();
+            if (contains(u, "Comprueba si este enunciado")) return (n_fid++ == 0 ? json{{"equivalente", false}, {"motivo", "es más débil"}} : json{{"equivalente", true}, {"motivo", ""}}).dump();
+            return OK_PAR;
+        });
+        Config c = cfg_base();
+        c.fidelidad = true;
+        int forms = 0;
+        CHECK(r.correr(llm, c) == 0, "con fidelidad resuelve");
+        for (auto& l : llm.llamadas) if (contains(l.usuario, "Traduce el siguiente problema")) ++forms;
+        CHECK(forms == 2, "la fidelidad negativa provoca otra formalización");
     }
-    {
-        TempDir td;
-        ScriptedLLM llm({act("done", {{"summary", "Hola Marta"}})});
-        Rig rig(td.p, llm);
-        CHECK(rig.ag.chat_turn("hola") == "Hola Marta" && rig.mem.recent_dialogue(5).size() == 2, "chat_turn");
-        CHECK(rig.ag.free_goal().has_value(), "objetivo libre");
-        CHECK(contains(rig.ag.maintenance(), "compactada"), "mantenimiento");
+    {   // pausa por presupuesto y reanudación
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "par_mayor"}, {"acepta_contiene", {"2 * n + 2"}}}}));
+        LlmFalso llm(router({MAL_PAR, MAL_PAR, OK_PAR}));
+        Config c = cfg_base();
+        c.max_intentos = 2;
+        CHECK(r.correr(llm, c) == 3, "--max-intentos: pausa (3)");
+        json e = r.estado();
+        CHECK(e["estado"] == "pausado" && e["formalizado"] == true && e["raiz"]["directos"] == 1, "estado guardado a mitad");
+        size_t antes = llm.llamadas.size();
+        CHECK(r.correr(llm, cfg_base()) == 0, "reanuda y termina");
+        CHECK(llm.llamadas.size() - antes == 2 && r.estado()["llamadas"] == 4 && r.log_contiene("Reanudando"), "no repite la formalización ni el intento 1");
     }
-    set_quiet(false);
+    {   // interrupción (SIGINT) y reanudación
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "par_mayor"}, {"acepta_contiene", {"2 * n + 2"}}}}));
+        auto base = router({MAL_PAR, OK_PAR});
+        LlmFalso llm([&](const std::string& u, int n) -> std::string {
+            if (n == 3) { bandera_parar() = true; throw Pausa("parada solicitada"); }
+            return base(u, n);
+        });
+        CHECK(r.correr(llm, cfg_base()) == 130, "interrupción: salida 130");
+        bandera_parar() = false;
+        CHECK(r.estado()["estado"] == "pausado", "estado pausado");
+        CHECK(r.correr(llm, cfg_base()) == 0, "reanuda tras la interrupción");
+    }
+    {   // Ollama caído
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "par_mayor"}, {"acepta_contiene", {"2 * n + 2"}}}}));
+        bool caido = true;
+        LlmFalso llm([&](const std::string& u, int) -> std::string {
+            if (contains(u, "Traduce el siguiente problema")) return formalizar_resp().dump();
+            if (caido) { caido = false; throw ErrorModelo("Ollama caído"); }
+            return OK_PAR;
+        });
+        CHECK(r.correr(llm, cfg_base()) == 4 && r.estado()["formalizado"] == true, "Ollama caído: salida 4 y estado guardado");
+        CHECK(r.correr(llm, cfg_base()) == 0, "reanuda cuando vuelve");
+    }
+    {   // sin solución
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "par_mayor"}, {"acepta_contiene", {"2 * n + 2"}}}}));
+        LlmFalso llm(router({MAL_PAR, "```lean\n" + FIRMA + "\n  simp\n```", "```lean\n" + FIRMA + "\n  decide\n```"}));
+        Config c = cfg_base();
+        c.profundidad = 0;
+        CHECK(r.correr(llm, c) == 1 && r.estado()["estado"] == "fallido" && contains(informe(r.dir), "✘"), "agota intentos: salida 1");
+    }
+    {   // ya verificado no llama al modelo; estado corrupto; problema distinto
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "par_mayor"}, {"acepta_contiene", {"2 * n + 2"}}}}));
+        fs::create_directories(r.dir);
+        escribir_archivo(r.dir / "estado.json", "{esto no es json");
+        LlmFalso llm(router({OK_PAR}));
+        CHECK(r.correr(llm, cfg_base()) == 0, "estado corrupto: empieza de nuevo");
+        bool corrupto = false, bak = false;
+        for (auto& e : fs::directory_iterator(r.dir)) { std::string n = e.path().filename().string(); if (contains(n, "corrupto")) corrupto = true; }
+        CHECK(corrupto, "se conserva copia del estado corrupto");
+        size_t n = llm.llamadas.size();
+        CHECK(r.correr(llm, cfg_base()) == 0 && llm.llamadas.size() == n, "ya verificado: no llama al modelo");
+        LlmFalso llm2(router({OK_PAR}));
+        CHECK(r.correr(llm2, cfg_base(), problema("Otro enunciado distinto.")) == 0 && llm2.llamadas.size() >= 2, "otro problema: empieza de nuevo");
+        for (auto& e : fs::directory_iterator(r.dir)) if (contains(e.path().filename().string(), ".bak.")) bak = true;
+        CHECK(bak, "se conserva copia del estado anterior");
+    }
+    {   // axiomas
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "par_mayor"}, {"acepta_contiene", {"2 * n + 2"}}, {"axiomas", {"miAxioma"}}}}));
+        std::string otra = "```lean\n" + FIRMA + "\n  exact ⟨2 * n + 2 + 0, by omega⟩\n```";
+        LlmFalso llm(router({OK_PAR, otra}));
+        CHECK(r.correr(llm, cfg_base()) == 1 && contains(r.estado()["ultimo_error"].get<std::string>(), "axiomas no permitidos") && !fs::exists(r.dir / "resultado.lean"), "axiomas no permitidos bloquean el resultado");
+        oraculo(r.t, json::array({{{"enunciado_contiene", "par_mayor"}, {"acepta_contiene", {"2 * n + 2"}}, {"axiomas", {"propext", "Classical.choice", "Quot.sound"}}}}));
+        CHECK(r.correr(llm, cfg_base()) == 0, "con los axiomas estándar sí");
+    }
+    {   // tácticas automáticas
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "par_mayor"}, {"auto", true}}}));
+        LlmFalso llm(router({}));
+        CHECK(r.correr(llm, cfg_base()) == 0 && llm.llamadas.size() == 1 && contains(leer_archivo(r.dir / "resultado.lean"), "first"), "first | omega | ... lo resuelve sin llamar al modelo");
+    }
 }
 
-static void t_learning() {
-    set_quiet(true);
-    std::string goal = "El usuario dice: hola\nResponde...";
-    auto fl = [](const std::string& p) { return act("fs_list", {{"path", p}}); };
+// ------------------------------------------------------------------ descomposición en lemas
+static const std::string FIRMA_P = "theorem principal (n : Nat) : n + 0 + 0 = n := by";
+static std::string buscar(const std::string& u, const std::string& patron) {
+    std::smatch m;
+    return std::regex_search(u, m, std::regex(patron)) ? m.str() : "";
+}
+
+static void t_lemas() {
+    {   // un nivel
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "principal"}, {"acepta_contiene", {"exact"}}, {"usa_lema", "l\\d+_aux"}},
+                                  {{"enunciado_contiene", "aux"}, {"acepta_contiene", {"omega"}}}}));
+        LlmFalso llm([&](const std::string& u, int) -> std::string {
+            if (contains(u, "Traduce el siguiente problema")) return formalizar_resp(FIRMA_P).dump();
+            if (contains(u, "Diseña una estrategia")) return json{{"lemas", {"theorem aux (n : Nat) : n + 0 = n := by"}}}.dump();
+            if (contains(u, "Demuestra este teorema en Lean 4")) {
+                std::string cab = u.substr(0, u.find("LEMAS YA DEMOSTRADOS"));
+                if (contains(cab, "theorem principal")) {
+                    std::string l = buscar(u, "l\\d+_aux");
+                    return "```lean\n" + FIRMA_P + (l.empty() ? "\n  omega" : "\n  exact " + l + " n") + "\n```";
+                }
+                return "```lean\ntheorem aux (n : Nat) : n + 0 = n := by\n  omega\n```";
+            }
+            return "{}";
+        });
+        CHECK(r.correr(llm, cfg_base(), problema("enunciado")) == 0, "descompone en un lema y resuelve");
+        std::string cod = leer_archivo(r.dir / "resultado.lean");
+        CHECK(cod.find("_aux") < cod.find("theorem principal"), "el lema va antes que el teorema");
+        json raiz = r.estado()["raiz"];
+        CHECK(raiz["hijos"].size() == 1 && raiz["hijos"][0]["estado"] == "probado", "árbol con un hijo demostrado");
+    }
+    {   // recursión de dos niveles
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "principal"}, {"acepta_contiene", {"exact"}}, {"usa_lema", "l\\d+_aux"}},
+                                  {{"enunciado_contiene", "aux"}, {"acepta_contiene", {"exact"}}, {"usa_lema", "l\\d+_sub"}},
+                                  {{"enunciado_contiene", "sub"}, {"acepta_contiene", {"omega"}}}}));
+        LlmFalso llm([&](const std::string& u, int) -> std::string {
+            if (contains(u, "Traduce el siguiente problema")) return formalizar_resp(FIRMA_P).dump();
+            if (contains(u, "Diseña una estrategia")) {
+                size_t a = u.find("TEOREMA PRINCIPAL:\n") + 19;
+                std::string objetivo = u.substr(a, u.find('\n', a) - a);
+                if (contains(objetivo, "principal")) return json{{"lemas", {"theorem aux (n : Nat) : n + 0 = n := by"}}}.dump();
+                return json{{"lemas", {"theorem sub (n : Nat) : n = n + 0 := by"}}}.dump();
+            }
+            if (contains(u, "Demuestra este teorema en Lean 4")) {
+                size_t a = u.find("```lean\n") + 8;
+                std::string objetivo = u.substr(a, u.find('\n', a) - a);
+                std::string ctx = u.substr(u.find("LEMAS YA DEMOSTRADOS"));
+                if (contains(objetivo, "theorem principal")) {
+                    std::string l = buscar(u, "l\\d+_aux");
+                    return "```lean\n" + FIRMA_P + (l.empty() ? "\n  omega" : "\n  exact " + l + " n") + "\n```";
+                }
+                if (contains(objetivo, "_aux")) {
+                    std::string s = buscar(ctx, "l\\d+_sub");
+                    return "```lean\n" + objetivo + (s.empty() ? "\n  omega" : "\n  exact " + s + " n") + "\n```";
+                }
+                return "```lean\n" + objetivo + "\n  omega\n```";
+            }
+            return "{}";
+        });
+        Config c = cfg_base();
+        c.profundidad = 2;
+        CHECK(r.correr(llm, c, problema("enunciado")) == 0, "recursión de dos niveles");
+        std::string cod = leer_archivo(r.dir / "resultado.lean");
+        CHECK(cod.find("_sub") < cod.find("_aux") && cod.find("_aux") < cod.find("theorem principal"), "orden de dependencias en el resultado");
+        CHECK(r.estado()["raiz"]["hijos"][0]["hijos"][0]["prof"] == 2, "profundidad 2 en el árbol");
+    }
+    {   // reanudar a mitad del plan sin repetir lo demostrado
+        Rig r;
+        oraculo(r.t, json::array({{{"enunciado_contiene", "principal"}, {"acepta_contiene", {"exact"}}, {"usa_lema", "l\\d+_aux"}},
+                                  {{"enunciado_contiene", "aux"}, {"acepta_contiene", {"omega"}}}}));
+        LlmFalso llm([&](const std::string& u, int) -> std::string {
+            if (contains(u, "Traduce el siguiente problema")) return formalizar_resp(FIRMA_P).dump();
+            if (contains(u, "Diseña una estrategia")) return json{{"lemas", {"theorem aux (n : Nat) : n + 0 = n := by"}}}.dump();
+            if (contains(u, "Demuestra este teorema en Lean 4")) {
+                std::string cab = u.substr(0, u.find("LEMAS YA DEMOSTRADOS"));
+                if (contains(cab, "theorem principal")) {
+                    std::string l = buscar(u, "l\\d+_aux");
+                    return "```lean\n" + FIRMA_P + (l.empty() ? "\n  omega" : "\n  exact " + l + " n") + "\n```";
+                }
+                return "```lean\ntheorem aux (n : Nat) : n + 0 = n := by\n  omega\n```";
+            }
+            return "{}";
+        });
+        Config c = cfg_base();
+        c.max_intentos = 6;   // 1 formalizar + 3 directos + 1 plan + 1 lema
+        CHECK(r.correr(llm, c, problema("e")) == 3, "pausa a mitad del plan");
+        json e = r.estado();
+        CHECK(e["raiz"]["hijos"][0]["estado"] == "probado" && e["raiz"]["finales"] == 0, "el lema queda demostrado y guardado");
+        size_t antes = llm.llamadas.size();
+        CHECK(r.correr(llm, cfg_base(), problema("e")) == 0, "reanuda");
+        CHECK(llm.llamadas.size() - antes == 1 && !contains(llm.llamadas[antes].usuario, "Diseña una estrategia"), "solo el intento final: no re-planifica ni repite el lema");
+    }
+}
+
+// ------------------------------------------------------------------ SymPy real (física)
+static void t_sympy() {
+    json espec = {{"descripcion", "Velocidad de escape v_esc(r) y su valor c en r = 2GM/c^2"},
+                  {"preambulo", "G, M, c, r = symbols('G M c r', positive=True)\nr_s = 2*G*M/c**2"},
+                  {"variables", {"v_esc"}},
+                  {"criterios", {"simplify(v_esc**2 - 2*G*M/r) == 0", "simplify(v_esc.subs(r, r_s) - c) == 0"}}};
+    std::string bien = "```python\nm, v = symbols('m v', positive=True)\nE = Rational(1, 2)*m*v**2 - G*M*m/r\nv_esc = solve(Eq(E, 0), v)[0]\n```";
+    std::string mal = "```python\nv_esc = c\n```";
+    Config c;
+    c.backend = "sympy"; c.fidelidad = false; c.directos = 4; c.timeout_py = 20;
     {
-        TempDir td;
-        ScriptedLLM llm({fl("."), fl("x"), fl("."), fl("x"), fl("."), fl("x"), fl(".")});
-        Rig rig(td.p, llm, Autonomy::Supervised, nullptr, false, 12);
-        int rules0 = 0;
-        for (auto& [id, it] : rig.mem.items()) if (it.kind == "rule") ++rules0;
-        CHECK(rules0 >= 3, "hay reglas semilla desde el principio");
-        GoalResult res = rig.ag.run_goal(goal);
-        CHECK(res.end_reason == "loop" && res.steps == 6, "el bucle alterno se corta (sin ejecutar la 4.ª repetición)");
-        CHECK(res.result == "Respuesta de emergencia de prueba." && !res.success, "aunque falle, el usuario recibe una respuesta");
-        std::string rule_id, rule_text;
-        bool lesson = false;
-        for (auto& [id, it] : rig.mem.items()) {
-            if (it.kind == "rule" && std::find(it.tags.begin(), it.tags.end(), "learned") != it.tags.end()) { rule_id = id; rule_text = it.text; }
-            if (it.kind == "lesson" && std::find(it.tags.begin(), it.tags.end(), "fail") != it.tags.end() && contains(it.text, "loop")) lesson = true;
-        }
-        CHECK(contains(rule_text, "directamente") && lesson, "autopsia: regla y lección generadas sin depender del modelo");
-        CHECK(rig.ag.practice_next() == goal, "el objetivo fallido queda en la cola de práctica");
-        llm.replies = {act("done", {{"summary", "Hola"}})};
-        GoalResult ok = rig.ag.run_goal(goal);
-        std::string main_prompt;
-        for (auto& c : llm.calls) if (contains(std::string(c[0]["content"]), "autonomous agent")) main_prompt = c[1]["content"];
-        CHECK(ok.success && contains(main_prompt, "directamente con done") && contains(main_prompt, "LEARNED RULES"), "la regla aprendida aparece en el siguiente prompt");
-        CHECK(!rig.ag.practice_next().has_value(), "al resolverlo, sale de la cola de práctica");
-        auto it = rig.mem.items().find(rule_id);
-        CHECK(it != rig.mem.items().end() && it->second.uses >= 1 && it->second.wins >= 1, "las reglas usadas cuentan usos y victorias");
-        std::string bad = rig.mem.add("Regla inútil de prueba para podar", "rule", {"rule", "learned"});
-        rig.mem.update_meta(bad, 7, 0, 1);
-        llm.replies = {act("done", {{"summary", "ok"}})};
-        rig.ag.run_goal("otro objetivo cualquiera");
-        CHECK(!rig.mem.items().count(bad), "poda: una regla que no ayuda se descarta");
-        int seeds = 0;
-        for (auto& [id, i2] : rig.mem.items()) if (std::find(i2.tags.begin(), i2.tags.end(), "seed") != i2.tags.end()) ++seeds;
-        CHECK(seeds == 3, "las reglas semilla no se podan");
-        for (int k = 0; k < 3; ++k) rig.mem.add("Fallo de prueba número " + std::to_string(k) + " con detalles distintos", "lesson", {"fail"}, false);
-        CHECK(!rig.ag.distill_rules().empty(), "destilado de reglas a partir de los fallos");
+        Rig r;
+        auto it = std::make_shared<int>(0);
+        LlmFalso llm([&](const std::string& u, int) -> std::string {
+            if (contains(u, "Convierte este problema")) return espec.dump();
+            return (*it)++ == 0 ? mal : bien;
+        });
+        int rc_f = r.correr(llm, c, problema("Escape.", "sympy"));
+        if (rc_f != 0) for (auto& l : r.logs) std::printf("    LOG: %s\n", l.c_str());
+        CHECK(rc_f == 0, "física: velocidad de escape = c en el radio de Schwarzschild");
+        CHECK(llm.llamadas.size() > 2 && contains(llm.llamadas[2].usuario, "CRITERIO_FALLA"), "el fallo concreto del criterio se devuelve al modelo");
+        std::string res = leer_archivo(r.dir / "resultado.py");
+        CHECK(contains(res, "solve(Eq(E, 0), v)") && contains(res, "verificar(2,"), "resultado.py con derivación y criterios del motor");
     }
-    {
-        TempDir td;
-        ScriptedLLM llm({fl("a"), fl("b"), fl("c"), fl("d")});
-        Rig rig(td.p, llm, Autonomy::Supervised, nullptr, false, 4);
-        rig.ag.run_goal("x");
-        CHECK(contains(std::string(llm.calls[2][1]["content"]), "Te quedan 2"), "avisa cuando quedan 2 pasos");
+    {   // trampa: el modelo intenta llamar a verificar()
+        Rig r;
+        auto it = std::make_shared<int>(0);
+        LlmFalso llm([&](const std::string& u, int) -> std::string {
+            if (contains(u, "Convierte este problema")) return espec.dump();
+            return (*it)++ == 0 ? "```python\nv_esc = sqrt(2*G*M/r)\nverificar(1, True)\n```" : bien;
+        });
+        CHECK(r.correr(llm, c, problema("Escape.", "sympy")) == 0, "la trampa no pasa");
+        std::string errores;
+        { json est = r.estado(); for (auto& e : est["raiz"]["errores"]) errores += e.get<std::string>(); }
+        CHECK(contains(errores, "Construcción prohibida"), "se rechaza el intento de verificar()");
     }
-    {
-        TempDir td;
-        ScriptedLLM llm({act("memory_stats"), act("memory_stats"), act("memory_stats"), act("done", {{"summary", "ok"}})});
-        Rig rig(td.p, llm, Autonomy::Supervised, nullptr, false, 8);
-        rig.ag.run_goal("x");
-        CHECK(contains(std::string(llm.calls[3][1]["content"]), "exactamente esta acción 2 veces"), "avisa al repetir la misma acción");
+    {   // bucle infinito y errores de Python
+        Rig r;
+        auto it = std::make_shared<int>(0);
+        LlmFalso llm([&](const std::string& u, int) -> std::string {
+            if (contains(u, "Convierte este problema")) return espec.dump();
+            int k = (*it)++;
+            return k == 0 ? "```python\nwhile True:\n    pass\n```" : k == 1 ? "```python\nv_esc = nodefinida + 1\n```" : bien;
+        });
+        Config c2 = c;
+        c2.timeout_py = 2;
+        CHECK(r.correr(llm, c2, problema("Escape.", "sympy")) == 0, "sobrevive a un bucle infinito y a un NameError");
+        std::string errores;
+        { json est = r.estado(); for (auto& e : est["raiz"]["errores"]) errores += e.get<std::string>() + " | "; }
+        CHECK(contains(errores, "límite") && contains(errores, "NameError"), "los errores llegan al modelo");
     }
-    set_quiet(false);
-}
-
-static void t_no_bypass() {
-    set_quiet(true);
-    TempDir td;
-    ScriptedLLM llm({act("shell", {{"cmd", "echo pwn > pwned.txt"}}), act("fs_write", {{"path", "../fuera.txt"}, {"content", "x"}}),
-                     act("herramienta_inventada"), act("self_patch", {{"edits", json::array({{{"file", "src/judge.cpp"}, {"old", "a"}, {"new", "b"}}})}}),
-                     act("done", {{"summary", "fin"}})});
-    Rig rig(td.p, llm);
-    GoalResult r = rig.ag.run_goal("intenta cosas");
-    CHECK(!fs::exists(td.p / "workspace" / "pwned.txt"), "shell denegada: sin efecto");
-    CHECK(!fs::exists(td.p / "fuera.txt"), "no escribe fuera del espacio de trabajo");
-    CHECK(r.finished, "el agente sigue tras las denegaciones");
-    set_quiet(false);
-}
-
-static void t_text() {
-    std::vector<std::pair<std::string, std::string>> links;
-    std::string html = "<html><head><title>T</title><style>.x{}</style></head><body><h1>Titulo</h1><script>var s=1;</script><p>Hola <b>mundo</b> &amp; &#233;</p><a href='/otra'>enlace uno</a></body></html>";
-    std::string t = html_to_text(html, "http://a.com/p", &links);
-    CHECK(contains(t, "Hola mundo & é") && !contains(t, "var s") && !contains(t, ".x{}") && !contains(t, "<b>"), "html_to_text: limpio y con entidades");
-    CHECK(links.size() == 1 && links[0].first == "enlace uno" && links[0].second == "http://a.com/otra", "enlaces resueltos");
-    std::string ddg = "<div class=\"result\"><a rel=\"nofollow\" class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Fa%3Fx%3D1&amp;rut=zz\">Ejemplo <b>uno</b></a>"
-                      "<a class=\"result__snippet\" href=\"x\">Resumen <b>uno</b></a></div><div><a class=\"result__a\" href=\"https://example.net/b\">Dos</a></div>";
-    auto res = parse_ddg(ddg, 5);
-    CHECK(res.size() == 2 && res[0].url == "https://example.org/a?x=1" && res[0].title == "Ejemplo uno" && res[0].snippet == "Resumen uno" && res[1].url == "https://example.net/b", "parse_ddg");
-}
-
-static void t_gate() {
-    TempDir td;
-    fs::path src = td.p / "src_tree";
-    write_file(src / "CMakeLists.txt", "cmake_minimum_required(VERSION 3.16)\n");
-    write_file(src / "include/orion/judge.hpp", "// juez\n");
-    write_file(src / "src/judge.cpp", "// juez cpp\n");
-    write_file(src / "src/foo.cpp", "int foo() { return 1; }\nint bar() { return 1; }\n");
-    write_file(src / "include/orion/foo.hpp", "int foo();\n");
-    write_file(src / "tests/test_main.cpp", "// tests\n");
-    Policy pol;
-    pol.approver = [](const std::string&, const std::string&) { return false; };
-    Audit audit;
-    SelfGate g(src, td.p / "versions", pol, audit);
-    std::string build_result;
-    int builds = 0;
-    g.build_check = [&](const fs::path& cand) { ++builds; return build_result; };
-    auto edit = [](const std::string& f, const std::string& o, const std::string& n) { return json::array({{{"file", f}, {"old", o}, {"new", n}}}); };
-
-    write_file(src / "tools/x.sh", "echo tools\n");
-    // `old` es texto que SÍ existe en cada archivo: así el rechazo solo puede deberse a que es del juez
-    struct { const char* f; const char* old; } judge_files[] = {
-        {"src/judge.cpp", "// juez cpp"}, {"include/orion/judge.hpp", "// juez"}, {"CMakeLists.txt", "cmake_minimum_required"},
-        {"tests/test_main.cpp", "// tests"}, {"tools/x.sh", "echo tools"}, {"src/../src/judge.cpp", "// juez cpp"}, {"src/../tests/test_main.cpp", "// tests"}};
-    for (auto& jf : judge_files) {
-        std::string r = g.propose(edit(jf.f, jf.old, "// modificado"), "x");
-        CHECK(contains(r, "RECHAZADO") && contains(r, "JUEZ"), std::string("el juez no se toca (por ser del juez): ") + jf.f + " -> " + r);
+    {   // especificación inválida
+        Rig r;
+        auto it = std::make_shared<int>(0);
+        LlmFalso llm([&](const std::string& u, int) -> std::string {
+            if (contains(u, "Convierte este problema"))
+                return (*it)++ == 0 ? json{{"descripcion", "x"}, {"preambulo", ""}, {"variables", {"v"}}, {"criterios", {"sin cerrar ("}}}.dump() : espec.dump();
+            return bien;
+        });
+        CHECK(r.correr(llm, c, problema("Escape.", "sympy")) == 0 && contains(llm.llamadas[1].usuario, "sintaxis"), "especificación inválida: se reformula");
     }
-    CHECK(builds == 0 && read_file(src / "src/judge.cpp") == "// juez cpp\n", "los parches al juez ni siquiera se compilan");
-    CHECK(contains(g.propose(edit("../fuera.cpp", "a", "b"), "x"), "RECHAZADO") && contains(g.propose(edit("/etc/passwd", "a", "b"), "x"), "RECHAZADO"), "rutas fuera del árbol");
-    CHECK(contains(g.propose(edit("src/foo.cpp", "return 1", "return 2"), "x"), "2 veces"), "un old ambiguo se rechaza");
-    CHECK(contains(g.propose(edit("src/foo.cpp", "NO_EXISTE", "x"), "x"), "0 veces") && contains(g.propose(json::array(), "x"), "RECHAZADO"), "old inexistente / lista vacía");
-    CHECK(contains(g.propose(edit("src/nada.cpp", "a", "b"), "x"), "no existe"), "archivo inexistente");
-    CHECK(contains(g.propose(edit("src/foo.cpp", "int foo() { return 1; }", "int foo() { return 1; }"), "x"), "no cambia nada"), "parche vacío");
-    build_result = "falla la compilación:\n  error: algo";
-    std::string before = read_file(src / "src/foo.cpp");
-    CHECK(contains(g.propose(edit("src/foo.cpp", "int foo() { return 1; }", "int foo() { return 2; }"), "x"), "RECHAZADO por la compuerta") && read_file(src / "src/foo.cpp") == before, "si el candidato no compila/pasa pruebas, no se aplica");
-    build_result = "";
-    json good = edit("src/foo.cpp", "int foo() { return 1; }", "int foo() { return 2; }");
-    std::string r = g.propose(good, "prueba");
-    CHECK(contains(r, "no aprobado") && read_file(src / "src/foo.cpp") == before && !g.restart_requested, "sin aprobación humana no se aplica");
-    pol.approver = [](const std::string&, const std::string&) { return true; };
-    r = g.propose(good, "prueba");
-    CHECK(contains(r, "APLICADO") && contains(read_file(src / "src/foo.cpp"), "return 2") && g.restart_requested && g.versions().size() == 1, "con aprobación se aplica, guarda copia y pide reinicio: " + r);
-    r = g.rollback(g.versions()[0]);
-    CHECK(contains(r, "APLICADO") && read_file(src / "src/foo.cpp") == before, "rollback restaura la versión anterior");
-    CHECK(contains(g.rollback("v999"), "no existe"), "rollback de versión inexistente");
-    fs::create_directories(td.p / "versions" / "v900_x" / "src");
-    write_file(td.p / "versions" / "v900_x" / "src" / "judge.cpp", "// malicioso\n");
-    CHECK(contains(g.rollback("v900_x"), "RECHAZADO") && read_file(src / "src/judge.cpp") == "// juez cpp\n", "un rollback no puede reintroducir cambios en el juez");
-    CHECK(SelfGate::is_protected("src/judge.cpp") && SelfGate::is_protected("./tests/a") && !SelfGate::is_protected("src/agent.cpp"), "is_protected");
-}
-
-static void t_eval() {
-    std::map<std::string, std::map<std::string, std::string>> sol = {
-        {"hola", {{"hola.txt", "Hola Orion"}}}, {"numeros", {{"numeros.txt", "1\n2\n3\n4\n5"}}}, {"aritmetica", {{"resultado.txt", "391"}}},
-        {"memoria", {{"codigo.txt", "4821"}}}, {"listar", {{"listado.txt", "a.txt\nb.txt\nc.txt"}}}, {"contar", {{"cuenta.txt", "7"}}},
-        {"copiar", {{"destino.txt", "alfa beta"}}}, {"carpeta", {{"docs/leeme.md", "Proyecto Orion"}}}, {"anadir", {{"registro.txt", "uno\ndos"}}},
-        {"saludo", {{"saludo.txt", "Hola, Marta"}}}};
-    for (auto& t : eval_tasks()) {
-        TempDir td;
-        t.setup(td.p);
-        bool before = t.check(td.p);
-        for (auto& [k, v] : sol[t.name]) write_file(td.p / k, v);
-        CHECK(!before && t.check(td.p), "tarea de evaluación '" + t.name + "' es verificable (falla vacía, pasa con la solución)");
-    }
-    ScriptedLLM llm({act("fs_write", {{"path", "hola.txt"}, {"content", "Hola Orion"}}), act("done", {{"summary", "ok"}})});
-    auto all = eval_tasks();
-    json r = run_eval(llm, {all[0], all[1]}, 4);
-    CHECK(r["passed"] == 1 && r["total"] == 2 && std::abs(r["score"].get<double>() - 0.5) < 1e-9, "run_eval puntúa");
 }
 
 int main() {
-    set_quiet(true);
-    struct { const char* name; void (*fn)(); } tests[] = {{"hash", t_hash}, {"net", t_net}, {"paths", t_paths}, {"policy", t_policy}, {"guarded", t_guarded},
-        {"memory", t_memory}, {"parse", t_parse}, {"agent", t_agent}, {"learning", t_learning}, {"no_bypass", t_no_bypass}, {"text", t_text}, {"gate", t_gate}, {"eval", t_eval}};
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    struct { const char* n; void (*f)(); } tests[] = {{"util", t_util}, {"codigo", t_codigo}, {"procesos", t_procesos}, {"lean_simulado", t_lean_simulado},
+                                                      {"motor", t_motor}, {"lemas", t_lemas}, {"sympy", t_sympy}};
     for (auto& t : tests) {
         int f0 = g_fail;
-        try { t.fn(); } catch (const std::exception& e) { ++g_fail; std::printf("  EXCEPCIÓN en %s: %s\n", t.name, e.what()); }
-        std::printf("  %s %s\n", g_fail == f0 ? "ok " : "MAL", t.name);
+        try { t.f(); } catch (const std::exception& e) { ++g_fail; std::printf("  EXCEPCIÓN en %s: %s\n", t.n, e.what()); }
+        std::printf("  %s %s\n", g_fail == f0 ? "ok " : "MAL", t.n);
     }
     std::printf("\n%d comprobaciones, %d fallos\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;

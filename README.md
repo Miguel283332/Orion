@@ -1,122 +1,111 @@
-# Orion
+# Demostrador
 
-Agente autónomo que usa un **LLM local (Ollama)** como cerebro y lo rodea de lo que lo hace parecer vivo: **memoria propia**, acceso a **internet**, **ficheros**, **shell**, **descargas y subidas**, y **control sobre su propio código**. Mejora de tres formas: reflexionando (lecciones y habilidades), reescribiendo su código con una compuerta de seguridad y, con GPU, consolidando experiencia en sus **pesos** (LoRA).
+Resuelve **problemas matemáticos y físicos** con un modelo local de **Ollama** (p. ej. `qwen2.5:7b`) y un **verificador externo**: el modelo *propone* y el verificador *decide*. Está pensado para problemas **largos** y para poder **interrumpirlo en cualquier momento** sin perder trabajo.
 
-Hay **dos implementaciones** con el mismo diseño y el mismo formato de memoria (pueden compartir la carpeta de datos):
+| Backend | Para qué | Juez |
+|---|---|---|
+| `lean` | Matemáticas: demostraciones formales | **Lean 4** (compila la demostración y comprueba los axiomas) |
+| `sympy` | Física y cálculo simbólico: derivaciones | Criterios fijados **antes** de resolver, ejecutados con **SymPy** |
+
+Hay **dos implementaciones** con el mismo algoritmo y el **mismo formato de estado** (puedes pausar con una y reanudar con la otra):
 
 | | Archivo | Para qué |
 |---|---|---|
-| **Python** | [`orion_agent.py`](orion_agent.py) (un solo archivo, solo biblioteca estándar) | **Google Colab** ahora, y cualquier PC. Es la versión completa (incluye la consolidación en pesos). |
-| **C++** | [`src/`](src), [`include/`](include), [`CMakeLists.txt`](CMakeLists.txt) | Local, rápido y sin intérprete; para cuando tengas tu RTX. Mismo agente, memoria, herramientas, permisos y compuerta. |
+| **Python** | [`demostrador.py`](demostrador.py) (un solo archivo, solo biblioteca estándar) | Google Colab y cualquier PC |
+| **C++** | [`src/`](src), [`include/`](include), [`CMakeLists.txt`](CMakeLists.txt) | Local y rápido, sin intérprete (para tu RTX) |
 
-> El modelo de bytes entrenado desde cero que había antes sigue en [`legacy/byte_lm/`](legacy/byte_lm) (compila por separado).
+> El agente conversacional y el modelo de bytes anteriores siguen en [`legacy/`](legacy).
 
 ## Cómo funciona
 
 ```
-            ┌──────────────────────── Orion ─────────────────────────┐
- objetivo → │ bucle: razonar → actuar → observar → reflexionar        │
- (chat /    │    │                  │                      │          │
-  bandeja)  │    ▼                  ▼                      ▼          │
-            │  LLM (Ollama)   guarded_call()        lecciones/habilidades
-            │  JSON por turno  ├ permisos (humano)   → memoria
-            │                  ├ SSRF / secretos / rutas
-            │                  └ auditoría
-            │  herramientas: fs_* web_* download upload shell remember recall
-            │                core_* self_read self_patch self_rollback ask_user
-            │  memoria: núcleo (siempre visible) + archivo semántico (embeddings) + episodios
-            └────────────────────────────────────────────────────────┘
+ enunciado ──► FASE 0: formalizar ──► árbol de demostración (se guarda tras CADA intento)
+              (el verificador comprueba     │
+               el enunciado; el modelo       ├─ 1. tácticas automáticas   (first | omega | simp | decide | ...)
+               revisa su fidelidad)          ├─ 2. intentos directos       (con el código y el error del intento anterior)
+                                             └─ 3. descomposición en lemas (recursiva): cada lema es un subárbol;
+                                                  los ya demostrados se conservan si el plan falla
 ```
 
-- **Cerebro congelado**: un modelo de Ollama (por defecto `llama3.2:3b`). Cada turno responde un JSON `{"thought","tool","args"}` (se le pide `format: json`, que los modelos pequeños cumplen mucho mejor que el *tool calling* nativo).
-- **Memoria bajo su control**: *núcleo* (3000 caracteres siempre en contexto, que él reescribe), *archivo* semántico con embeddings de Ollama (o *hashing* si no hay modelo de embeddings) y *registro episódico*. Puede recordar, buscar y olvidar. Todo son archivos de texto en `orion_home/`.
-- **Un único punto de control** (`guarded_call`): toda herramienta pasa por ahí, y ahí se decide permiso, red, rutas, redacción de secretos y auditoría.
+- **El juez es externo.** En Lean, una demostración solo vale si compila **y** `#print axioms` solo muestra `propext`, `Classical.choice`, `Quot.sound` (sin `sorry` ni axiomas propios). El modelo no puede declarar que algo está demostrado.
+- **Reparación guiada.** Cada reintento recibe el código anterior y el error del verificador, no solo "falló".
+- **Reanudable.** Todo el árbol (lemas probados, intentos, errores, semillas) está en `estado.json`, escrito de forma atómica tras cada intento. Ejecutar de nuevo el mismo comando **continúa exactamente donde se quedó**, también tras Ctrl-C, `SIGTERM`, una caída de Ollama o un corte de la sesión de Colab.
+- **Presupuesto.** `--horas` y `--max-intentos` limitan *una sesión*; al llegar, se pausa con el progreso guardado.
 
 ## Empezar
 
-### Google Colab (recomendado ahora, sin GPU propia)
-Abre [`colab/Orion_Colab.ipynb`](colab/Orion_Colab.ipynb) en Colab (*Archivo → Abrir cuaderno → GitHub*), elige GPU T4 y ejecuta las celdas: instala Ollama, descarga el modelo y te deja chatear o dejarlo corriendo en segundo plano. Monta Google Drive para que la memoria sobreviva entre sesiones.
+### Google Colab
+Abre [`colab/Demostrador_Colab.ipynb`](colab/Demostrador_Colab.ipynb): instala Ollama, Lean 4 y el modelo, monta Drive (para que el progreso sobreviva) y resuelve los dos problemas de ejemplo.
 
-### Python en tu PC
-1. Instala [Ollama](https://ollama.com/download) y arráncalo. Luego:
+### Python
+Necesitas [Ollama](https://ollama.com/download) con el modelo, y Lean 4 ([elan](https://github.com/leanprover/elan)) para `lean` o `pip install sympy` para `sympy`.
+
 ```bash
-python orion_agent.py --model llama3.2:3b setup     # descarga el modelo y el de embeddings
-python orion_agent.py chat
+ollama pull qwen2.5:7b
+python demostrador.py resolver --problema problemas/facil_par_mayor.json
+python demostrador.py resolver --problema problemas/facil_velocidad_escape_schwarzschild.json
+python demostrador.py estado --dir demostrador_runs/par_mayor_xxxxxxxx     # progreso
 ```
-Con la gráfica integrada de Intel Ollama usa la CPU: un modelo de 3B va a pocos tokens por segundo. Con una RTX (CUDA) Ollama la usa solo; para una serie 50 hace falta un Ollama reciente.
 
 ### C++ (CMake / Visual Studio Code)
 ```bash
 cmake -S . -B build
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
-./build/orion_agent chat            # en Windows: .\build\Release\orion_agent.exe chat
+./build/demostrador resolver --problema problemas/facil_par_mayor.json     # Windows: .\build\Release\demostrador.exe
 ```
-Necesita `curl` en el PATH (viene con Windows 10+ y Linux/macOS) y descarga `nlohmann/json` al configurar si no lo tienes. En Visual Studio Code: *CMake: Select Variant → Release*, Configure, Build. La consolidación en pesos usa PyTorch, así que en C++ se delega: `python orion_agent.py sleep`.
+Necesita `curl` en el PATH (viene con Windows 10+ y Linux/macOS) y `python3` con `sympy` solo para el backend `sympy`.
 
-## Comandos
+## Problemas
 
-Las opciones comunes (`--home`, `--model`, `--autonomy`…) valen antes o después del comando.
+Un archivo JSON en [`problemas/`](problemas):
+```json
+{ "id": "par_mayor", "dominio": "matematicas", "backend": "lean",
+  "enunciado": "Demuestra la existencia de un número natural m mayor que cualquier n dado, tal que m sea par." }
+```
+- `facil_par_mayor.json` (Lean): el problema inicial.
+- `facil_velocidad_escape_schwarzschild.json` (SymPy): deduce la velocidad de escape y demuestra que vale `c` en el radio de Schwarzschild `r_s = 2GM/c²`. Es el primer paso hacia los agujeros negros.
 
-| Comando | Qué hace |
-|---|---|
-| `chat` | Conversas; el agente actúa con sus herramientas y te pregunta cuando necesita permiso. |
-| `goal "texto"` | Deja un objetivo en la bandeja de entrada (`orion_home/inbox/`). |
-| `run [--free]` | Bucle continuo: ejecuta objetivos, reflexiona, mantiene la memoria. Con `--free`, sin tareas, él elige qué hacer. |
-| `eval` | Mide al agente con 10 tareas verificables automáticamente. |
-| `sleep` | Consolida experiencias buenas en un LoRA y lo adopta **solo si mejora** en `eval` (Python, GPU). |
-| `approvals` / `approve ID` / `deny ID` | Permisos pendientes cuando no hay terminal (p. ej. en segundo plano en Colab). |
-| `memory [consulta]` | Ver o buscar en la memoria. |
-| `stop` / `resume` | Crea/borra el archivo `STOP` (el agente se detiene tras el paso actual). |
+### Problemas largos o difíciles
+```bash
+python demostrador.py resolver --problema problemas/tu_problema.json --horas 3 --directos 10 --replanes 5 --profundidad 3
+```
+Si el plan actual no basta, el motor pide lemas nuevos **sin descartar los ya demostrados**. Códigos de salida: `0` verificado · `1` no resuelto con esos límites · `3` pausa por presupuesto · `4` Ollama caído · `130` interrumpido (en los tres últimos casos, vuelve a ejecutar el mismo comando).
 
-## Permisos y seguridad
+Para análisis real o Mathlib hace falta un proyecto *lake* con Mathlib: `--lake-dir RUTA --mathlib`.
 
-El "control total" está disponible, pero **no es el valor por defecto**: un agente que lee internet puede recibir instrucciones maliciosas escondidas en una web (*inyección de prompts*).
+## Errores del cuaderno original que se han corregido
 
-| `--autonomy` | Comportamiento |
-|---|---|
-| `strict` | Solo lo trivial (memoria, listar/leer) va solo; escribir, web y todo lo demás pide permiso. |
-| `supervised` (defecto) | Archivos del espacio de trabajo y lectura web van solos. **`shell`, `upload` y `self_patch` piden permiso.** |
-| `full` | Sin permisos ni confinamiento. **Solo en una VM/Colab/contenedor sin credenciales.** |
-
-Además, siempre:
-- **Confinado** a `orion_home/workspace/`; no puede escribir en su código, auditoría ni versiones.
-- **SSRF**: bloquea localhost, redes privadas, metadatos de la nube (`169.254.x`) y redirecciones hacia ellas; fija la IP verificada para que un DNS malicioso no la cambie.
-- **Secretos**: no sube archivos que parezcan claves (`.env`, `id_rsa`, `*.pem`, contenido con tokens). Las credenciales se pasan como `{{secret:NOMBRE}}` (variable de entorno `ORION_SECRET_NOMBRE`): el modelo nunca ve el valor y se **redacta** de toda salida y de la auditoría.
-- **Contenido web = datos, no órdenes**: va marcado como no confiable, y tras leer la web el permiso avisa de posible inyección.
-- **Auditoría** (`audit.jsonl`) de cada herramienta, decisión y parche.
-- **Subidas a un servidor** siempre piden permiso, salvo a hosts que tú permitas con `--upload-host`.
-
-## Automejora
-
-1. **Del sistema** (barata, inmediata y **continua**): tras cada objetivo reflexiona y guarda *lecciones* y *habilidades*. Además **aprende de sus fallos sin depender del modelo** (un modelo pequeño no siempre se da cuenta de que se equivocó):
-   - *Autopsia automática*: si un objetivo termina en bucle, presupuesto agotado o respuestas inválidas, el código analiza qué pasó y escribe una **lección** y una **regla** (p. ej. «si solo saludan, respondo con `done` sin usar herramientas»).
-   - *Reglas siempre visibles* en el prompt, con seguimiento de usos y victorias; las que no ayudan se **podan**.
-   - *Detección de bucles* (incluidos los que alternan dos acciones), aviso cuando quedan 2 pasos y **respuesta de emergencia**: aunque falle, el usuario recibe una respuesta.
-   - *Práctica deliberada*: en ocio, `run` reintenta los objetivos que falló, ya con las reglas nuevas; y cada N objetivos (`--distill-every`) destila reglas generales de los fallos acumulados.
-2. **Del código**: `self_patch` propone ediciones (`old`→`new`) a su propio código. Se prueban en una **copia**: el *juez* debe quedar intacto, compilar y **pasar las pruebas**; después pide tu aprobación, guarda copia de seguridad (`self_rollback` para volver) y reinicia (Python) o te pide recompilar (C++).
-   *El juez* (permisos, red, auditoría, compuerta y pruebas) **no puede modificarse con `self_patch`**: así un parche no puede aprobar su propio examen.
-3. **De los pesos** (`sleep`, Python + GPU): convierte los pasos correctos de ciclos que él mismo evaluó como buenos en un dataset, afina un **LoRA**, lo registra en Ollama y lo adopta **solo si mejora estrictamente** en `eval` (si no, lo borra). Si falla dos veces seguidas, **sube el rango del LoRA** (más capacidad, "más neuronas") y reintenta.
+1. **Se perdía el progreso del plan**: el estado no guardaba los lemas ni las demostraciones ya hechas, así que al reanudar se rehacía todo. Ahora se guarda el árbol completo tras cada intento.
+2. **Las semillas se repetían tras reanudar** (`seed = 100 + intento`, y el contador volvía a 1): se reproducían los mismos intentos. Ahora son únicas y persistentes.
+3. **El modelo no veía su intento anterior**, solo un texto de error. Ahora recibe el código que falló y el error de Lean, más un historial de errores para no repetirlos.
+4. **`aesop` y `norm_num` en `import Lean`**: necesitan Mathlib y siempre fallaban, gastando compilaciones. Ahora la lista de tácticas depende de si hay Mathlib, y se prueban todas en **una** compilación con `first | ... | ...`.
+5. **La guía de Lean era errónea**: decía que `exact ⟨t, p, q⟩` no vale para `∃ x, P x ∧ Q x`, y sí vale.
+6. **Sin comprobación de axiomas**: ahora `#print axioms` rechaza `sorryAx` y axiomas propios; se prohíben también `native_decide`, `unsafe`, `macro`, `set_option`, `import`…
+7. **`normalizar` aplicaba NFKC antes de reemplazar `ℕ`**, que ya se había convertido en `N` y nunca llegaba a `Nat`.
+8. **Extracción frágil**: tomaba siempre el *último* bloque de código (suele ser una explicación) y no respetaba la sangría relativa del cuerpo.
+9. **Sin reintentos ni control de fallos de Ollama**: una caída abortaba todo. Ahora guarda el estado y sale con un mensaje claro.
+10. **Sin descomposición recursiva** y sin tiempo/intentos máximos: ahora hay ambos.
 
 ## Pruebas
 
 ```bash
-python orion_agent.py selftest          # 159 comprobaciones (permisos, red, memoria, agente, compuerta...)
-tests/e2e_python.sh                     # proceso real contra un Ollama simulado
-ctest --test-dir build                  # 147 comprobaciones del agente C++
-tests/e2e_cpp.sh build/orion_agent      # proceso real C++: web, subidas con secretos, SSRF, permisos...
-tests/e2e_cpp_selfpatch.sh              # compuerta real de automodificación (compila candidatos; lento)
+python demostrador.py selftest        # 32 pruebas del motor (Lean simulado, SymPy real)
+tests/e2e_python.sh                   # procesos reales: CLI + Ollama simulado + Lean simulado/SymPy real
+ctest --test-dir build                # 98 comprobaciones del motor C++
+tests/e2e_cpp.sh build/demostrador    # procesos reales C++, SIGTERM, reanudación e interoperabilidad con Python
 ```
-`tests/mock_ollama.py` es un servidor con el mismo protocolo que Ollama (más un mini servidor web) para probar sin modelo.
 
 ## Estado real: qué está verificado y qué no
 
-**Verificado** (con un Ollama *simulado*, porque aquí no hay Ollama ni GPU): bucle del agente, memoria, todas las herramientas contra servidores locales (web, descarga con límite, subida PUT/POST con secretos), SSRF, permisos y aprobaciones por archivo, compuerta de automodificación (rechaza tocar el juez, errores de sintaxis/compilación y cambios que rompen pruebas), interoperabilidad Python↔C++ y rollback.
+**Verificado** (con un Ollama y un Lean *simulados*, `tests/mock_ollama.py` y `tests/mock_lean.py`, porque en el entorno de desarrollo no había Ollama ni Lean): todo el motor (formalización, intentos, reparación, planes recursivos, conservación de lemas, axiomas, prohibidos, repetidos), la reanudación tras pausa, `SIGTERM`, caída de Ollama y estado corrupto, y la interoperabilidad Python↔C++. La parte de **física usa SymPy real**: la velocidad de escape se deriva y se verifica de verdad. La versión C++ compila sin avisos con GCC y clang y se compila y enlaza como `.exe` con MinGW-w64.
 
-**Escrito pero NO probado en real:**
-- Hablar con un **Ollama de verdad** y la calidad de un modelo pequeño como agente (los modelos de 3B se equivocan: por eso hay límites de pasos, detección de bucles y reflexión).
-- `setup` (instalar Ollama) y la búsqueda web (`DuckDuckGo`): dependen de internet y del formato de su HTML.
-- `sleep`/LoRA: necesita GPU, `torch`, `peft`; el mapeo Ollama→Hugging Face y la importación del adaptador en Ollama (`ADAPTER`) están sin verificar.
-- **Ejecución en Windows** de la versión C++. Compila sin avisos con GCC y clang (Linux) y se compila y enlaza como `.exe` con MinGW-w64 (cruzado), pero **no he podido ejecutarlo ni compilarlo con MSVC**. Si MSVC da algún error, dímelo.
+**NO verificado con el Lean real** (y puede necesitar ajustes cuando lo pruebes):
+- El formato exacto de los mensajes de Lean y la sintaxis de `first | ... | ...` en varias líneas; que `omega` y `exact?` existan en tu versión de Lean.
+- La calidad real de `qwen2.5:7b` formalizando y demostrando; el modelo se equivoca, y los problemas difíciles (agujeros negros) probablemente necesiten Mathlib y mucho tiempo.
+- La versión C++ con **MSVC**, o ejecutada en Windows.
 
-**Límites**: un LLM pequeño es un agente poco fiable en tareas largas; "automejora ilimitada" tiene el techo de la métrica (`eval`) y del cómputo; no hay emulación cerebral ni nada parecido a *Trascendencia*. Es una base seria y segura para experimentar.
+**Límites que conviene conocer:**
+- **Física ≠ Lean.** En el backend `sympy` los *criterios* los escribe el modelo antes de resolver; la verificación es tan fiable como esos criterios. Revísalos (salen en el registro). No es una demostración formal.
+- Que el enunciado formal sea **fiel** al problema solo lo comprueba el propio modelo (señal débil). En Lean, revisa la formalización a mano en problemas importantes.
+- Un modelo de 7B resuelve problemas fáciles; para problemas profundos, el límite es el modelo, no el motor.

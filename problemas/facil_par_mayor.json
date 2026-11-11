@@ -1,0 +1,6 @@
+{
+  "id": "par_mayor",
+  "dominio": "matematicas",
+  "backend": "lean",
+  "enunciado": "Demuestra la existencia de un número natural m mayor que cualquier número natural n dado, tal que m sea además un número par."
+}
