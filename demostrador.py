@@ -74,6 +74,7 @@ class Config:
         self.horas = 0.0            # 0 = sin límite de tiempo
         self.max_intentos = 0       # 0 = sin límite de llamadas al modelo
         self.semilla = 1
+        self.biblioteca = ""        # JSON con demostraciones verificadas previas (aprendizaje sin tocar pesos)
         for k, v in kw.items():
             if not hasattr(self, k):
                 raise TypeError(f"opción desconocida: {k}")
@@ -225,7 +226,7 @@ class LLM:
     def chat(self, sistema: str, usuario: str, *, temperatura: float = 0.2, num_predict: int = 1600, seed: int = 0,
              json_mode: bool = False) -> str:
         payload: Dict[str, Any] = {
-            "model": self.modelo, "stream": False,
+            "model": self.modelo, "stream": False, "keep_alive": "60m",
             "messages": [{"role": "system", "content": sistema}, {"role": "user", "content": usuario}],
             "options": {"temperature": temperatura, "num_predict": num_predict, "num_ctx": self.num_ctx, "seed": seed},
         }
@@ -268,7 +269,8 @@ class Verificador:
 # ------------------------------------------------------------------ Lean 4
 LEAN_PROHIBIDO = re.compile(
     r"\b(sorry|admit|axiom|native_decide|unsafe|implemented_by|extern|opaque|macro|macro_rules|syntax|elab|"
-    r"notation|infix|infixl|infixr|prefix|postfix|set_option|run_cmd|initialize|builtin_initialize)\b|#eval|#exit|#reduce|^\s*import\b",
+    r"notation|infix|infixl|infixr|prefix|postfix|set_option|run_cmd|initialize|builtin_initialize|trace|dbg_trace|dbgTrace|ofReduceBool|bv_decide|namespace|attribute)\b|"
+    r"\+native|#eval|#exit|#reduce|^\s*import\b",
     re.M)
 LEAN_ORDENES = re.compile(r"^(theorem|lemma|example|def|abbrev|instance|structure|inductive|class|namespace|end|open|section|"
                           r"variable|universe|attribute|noncomputable|private|protected|#)\b")
@@ -533,6 +535,8 @@ ENUNCIADO LEAN:
 
 Devuelve SOLO JSON: {{"equivalente": true|false, "motivo": "una frase"}}"""
 
+    ejemplos = ""
+
     def prompt_prueba(self, firma: str, bloques: List[str], estado: Dict[str, Any], nodo: Dict[str, Any], tipo: str) -> str:
         ctx = "\n\n".join(bloques) or "(ninguno)"
         prev = ""
@@ -566,7 +570,7 @@ DEFINICIONES:
 
 LEMAS YA DEMOSTRADOS (puedes usarlos por su nombre):
 {ctx}
-{prev}{otros}
+{self.ejemplos}{prev}{otros}
 
 {GUIA_LEAN}
 
@@ -600,18 +604,59 @@ sin hipótesis injustificadas; sin sorry/admit/axiom; cada uno termina en `:= by
 Devuelve SOLO JSON: {{"lemas": ["theorem nombre (...) : proposicion := by"]}}"""
 
 
+# ------------------------------------------------------------------ biblioteca de demostraciones verificadas
+def _tokens(t: str) -> set:
+    return {w for w in re.findall(r"[a-zA-Z_áéíóúñ]{3,}|\d+", (t or "").lower())}
+
+
+def biblioteca_cargar(ruta: str) -> List[Dict[str, Any]]:
+    try:
+        d = json.loads(Path(ruta).read_text(encoding="utf-8")) if ruta and Path(ruta).is_file() else []
+        return d if isinstance(d, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def biblioteca_anadir(ruta: str, entrada: Dict[str, Any]) -> None:
+    if not ruta:
+        return
+    datos = [e for e in biblioteca_cargar(ruta) if e.get("id") != entrada.get("id")]
+    datos.append(entrada)
+    Path(ruta).parent.mkdir(parents=True, exist_ok=True)
+    escribir_atomico(Path(ruta), json.dumps(datos, ensure_ascii=False, indent=1))
+
+
+def biblioteca_ejemplos(ruta: str, enunciado: str, backend: str, n: int = 2, maximo: int = 900) -> str:
+    """Las n demostraciones verificadas más parecidas (solapamiento de palabras): ejemplos reales que el modelo imita."""
+    q = _tokens(enunciado)
+    pun = []
+    for e in biblioteca_cargar(ruta):
+        if e.get("backend") != backend or not e.get("codigo") or e.get("enunciado") == enunciado:
+            continue
+        t = _tokens(e.get("enunciado", "")) | set(e.get("etiquetas", []))
+        pun.append((len(q & t) / (len(q | t) or 1), e))
+    pun.sort(key=lambda x: -x[0])
+    out = []
+    for sc, e in pun[:n]:
+        if sc <= 0:
+            continue
+        out.append(f"PROBLEMA RESUELTO: {recortar(e['enunciado'], 220)}\n```{'lean' if backend == 'lean' else 'python'}\n{recortar(e['codigo'], maximo)}\n```")
+    return ("\nEJEMPLOS VERIFICADOS (de problemas parecidos ya resueltos; imita su estilo, no los copies):\n" + "\n\n".join(out) + "\n") if out else ""
+
+
 # ------------------------------------------------------------------ SymPy (física y cálculo simbólico)
 PRELUDIO_PY = '''import sympy as sp
 from sympy import *
 
 def verificar(i, cond):
-    if not bool(cond):
-        raise AssertionError("CRITERIO_FALLA %s" % i)
+    if not (cond is True or cond == sp.true):
+        raise AssertionError("CRITERIO_FALLA %s (el criterio debe ser una comparacion que valga True, p. ej. simplify(...) == 0)" % i)
     print("CRITERIO_OK %s" % i)
 '''
 PY_PROHIBIDO = re.compile(
     r"\b(verificar|subprocess|socket|urllib|requests|http|ftplib|ctypes|shutil|pathlib|importlib|__import__|exec|eval|"
-    r"compile|globals|locals|breakpoint|input|open|os\.system|os\.popen|os\.remove|sys\.exit|exit|quit)\b")
+    r"compile|globals|locals|breakpoint|input|open|os\.system|os\.popen|os\.remove|sys\.exit|exit|quit|"
+    r"os|sys|SystemExit|_exit|builtins|getattr|setattr|sympify|parse_expr|__\w+__)\b")
 
 
 class SympyVerificador(Verificador):
@@ -653,7 +698,7 @@ class SympyVerificador(Verificador):
                            f"CPU o de memoria. Usa un cálculo más ligero (menos simplificaciones pesadas, series cortas).")
         if r.returncode != 0:
             return False, salida or "El script falló sin mensaje."
-        if nombre_final and "TODO_VERIFICADO" not in salida:
+        if nombre_final and not (salida.count("TODO_VERIFICADO") == 1 and salida.splitlines()[-1].strip() == "TODO_VERIFICADO"):
             return False, "El script terminó pero no llegó a comprobar todos los criterios."
         return True, salida
 
@@ -688,6 +733,20 @@ class SympyVerificador(Verificador):
         lineas = [l for l in (resumen or "").splitlines() if l.strip()]
         return lineas[-1] if lineas else ""     # la excepción es la última línea del traceback
 
+    def ayuda_error(self, salida: str) -> str:
+        """Consejo accionable según la excepción (el modelo pequeño no suele interpretar tracebacks)."""
+        t = salida or ""
+        if re.search(r"NameError", t):
+            return ("\nPISTA: usas un nombre sin definir. Declara TODO símbolo con symbols(...) en el preámbulo; "
+                    "el preámbulo NO puede usar las variables de resultado (esas las define la solución).")
+        if re.search(r"SyntaxError", t):
+            return "\nPISTA: error de sintaxis Python; una instrucción por línea, sin texto explicativo ni marcas de formato."
+        if re.search(r"TypeError|AttributeError", t):
+            return "\nPISTA: usa funciones de SymPy (sqrt, Rational, Eq, symbols) y no métodos inventados."
+        if re.search(r"ImportError|ModuleNotFoundError", t):
+            return "\nPISTA: solo se dispone de sympy (ya importado con `from sympy import *`); no importes nada más."
+        return ""
+
     def enunciado_trivial(self, firma: str) -> Optional[str]:
         return None
 
@@ -696,6 +755,14 @@ class SympyVerificador(Verificador):
 
 PROBLEMA:
 {problema}
+
+EJEMPLO COMPLETO (para otro problema: caída libre) de la respuesta esperada:
+{{"descripcion": "Deducir la velocidad final v de un cuerpo que cae una altura h con gravedad g.",
+ "preambulo": "g, h, m = symbols('g h m', positive=True)",
+ "variables": ["v"],
+ "criterios": ["simplify(v**2 - 2*g*h) == 0"]}}
+(`preambulo` solo declara símbolos con `symbols(...)`; NO calcula nada ni usa las variables de resultado; `variables` son los nombres que luego definirá la solución;
+ cada criterio es UNA expresión Python que vale True; no uses f-strings, `print`, `import` ni texto fuera del JSON.)
 
 Debes definir:
 1. "preambulo": código Python (SymPy) que declara símbolos, constantes y supuestos (p. ej. `G, M, c, r = symbols('G M c r', positive=True)`).
@@ -718,6 +785,8 @@ PROBLEMA:
 {defs}
 
 Devuelve SOLO JSON: {{"equivalente": true|false, "motivo": "una frase"}}"""
+
+    ejemplos = ""
 
     def prompt_prueba(self, firma: str, bloques: List[str], estado: Dict[str, Any], nodo: Dict[str, Any], tipo: str) -> str:
         prev = ""
@@ -746,7 +815,7 @@ Tu código debe DEFINIR estas variables: {', '.join(estado.get('variables', []))
 Después de tu código se comprobarán automáticamente estos criterios (no los escribas tú):
 {crit}
 
-REGLAS: deriva el resultado (planteando ecuaciones y resolviendo con solve/dsolve/integrate/series/simplify...), no lo escribas ya hecho;
+{self.ejemplos}REGLAS: deriva el resultado (planteando ecuaciones y resolviendo con solve/dsolve/integrate/series/simplify...), no lo escribas ya hecho;
 sin entrada/salida de ficheros ni red; sin `verificar`; el código debe ejecutarse sin errores.
 {prev}
 
@@ -891,7 +960,8 @@ class Motor:
                 self.estado["ultimo_error"] = recortar(error, 800)
                 self.guardar()
                 self.evento("formalizacion_fallo", error=recortar(error, 400))
-                self.say(None, f"formalización {i}/{self.cfg.formalizar} rechazada: {recortar(error.splitlines()[0] if error else '', 140)}")
+                lineas_e = [l for l in error.splitlines() if l.strip()]
+                self.say(None, f"formalización {i}/{self.cfg.formalizar} rechazada: {recortar(lineas_e[-1] if lineas_e else '', 200)}")
         raise RuntimeError("No se pudo formalizar el problema: " + recortar(error, 300))
 
     def _validar_formalizacion(self, datos: Dict[str, Any]) -> Tuple[str, str]:
@@ -931,7 +1001,8 @@ class Motor:
             raise ValueError(f"Error de sintaxis en la especificación: {e}")
         ok, salida = ver.comprobar(ensamblar(PRELUDIO_PY, pre, 'print("TODO_VERIFICADO")'), nombre_final="x")
         if not ok:
-            raise ValueError("El preámbulo no se ejecuta: " + ver.resumir_error(salida))
+            raise ValueError("El preámbulo no se ejecuta.\nTU PREÁMBULO:\n" + recortar(pre, 500) + ver.ayuda_error(salida) +
+                             "\nERROR:\n" + ver.resumir_error(salida))
         self.estado.update({"preambulo": pre.strip(), "variables": vars_, "criterios": crit})
         return desc, desc
 
@@ -1117,11 +1188,15 @@ class Motor:
         self.estado["estado"] = "verificado"
         self.guardar()
         self.evento("verificado", archivo=str(archivo))
+        biblioteca_anadir(self.cfg.biblioteca, {"id": self.estado["problema"].get("id", ""), "backend": self.cfg.backend,
+                          "enunciado": self.estado["problema"]["enunciado"], "codigo": codigo,
+                          "etiquetas": list(self.estado["problema"].get("etiquetas", []))})
         return True
 
     def ejecutar(self, problema: Dict[str, Any], reiniciar: bool = False) -> int:
         self.say(None, f"Verificador: {self.ver.entorno()} | modelo {self.cfg.modelo}")
         self.cargar(problema, reiniciar)
+        self.ver.ejemplos = biblioteca_ejemplos(self.cfg.biblioteca, problema["enunciado"], self.cfg.backend) if self.cfg.biblioteca else ""
         self.t_inicio = time.time()
         previo = signal.getsignal(signal.SIGTERM) if hasattr(signal, "SIGTERM") else None
 
@@ -1252,7 +1327,8 @@ def construir_config(a: argparse.Namespace, problema: Dict[str, Any]) -> Config:
     cfg = Config(modelo=a.modelo, ollama_url=a.ollama_url or os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434"), backend=problema["backend"],
                  lean=a.lean or "", lake_dir=a.lake_dir or "", mathlib=a.mathlib, horas=a.horas, max_intentos=a.max_intentos,
                  directos=a.directos, finales=a.finales, replanes=a.replanes, profundidad=a.profundidad, num_ctx=a.num_ctx,
-                 num_predict=a.num_predict, fidelidad=not a.sin_fidelidad, semilla=a.semilla, timeout_lean=a.timeout_lean)
+                 num_predict=a.num_predict, fidelidad=not a.sin_fidelidad, semilla=a.semilla, timeout_lean=a.timeout_lean,
+                 biblioteca=getattr(a, "biblioteca", "") or "")
     return cfg
 
 
@@ -1277,6 +1353,50 @@ def cmd_resolver(a: argparse.Namespace) -> int:
     except RuntimeError as e:
         print(f"ERROR: {e}")
         return 2
+
+
+def cmd_curriculo(a: argparse.Namespace) -> int:
+    """Resuelve en orden los problemas de un currículo de dificultad creciente; cada uno verificado alimenta la biblioteca."""
+    datos = json.loads(Path(a.archivo).read_text(encoding="utf-8"))
+    lista = list(datos.get(a.pista, []))
+    if not lista:
+        raise SystemExit(f"El currículo no tiene la pista '{a.pista}' (usa lean, sympy o abiertos).")
+    lista.sort(key=lambda p: p.get("nivel", 0))
+    base_dir = Path(a.dir)
+    prog_path = base_dir / f"progreso_{a.pista}.json"
+    prog = json.loads(prog_path.read_text(encoding="utf-8")) if prog_path.is_file() else {}
+    a.biblioteca = a.biblioteca or str(base_dir / f"biblioteca_{a.pista}.json")
+    resueltos = 0
+    for p in lista:
+        if a.desde and p.get("nivel", 0) < a.desde:
+            continue
+        if a.hasta and p.get("nivel", 0) > a.hasta:
+            break
+        if prog.get(p["id"]) == "verificado":
+            print(f"[nivel {p.get('nivel')}] {p['id']}: ya verificado", flush=True)
+            resueltos += 1
+            continue
+        print(f"\n===== NIVEL {p.get('nivel')}: {p.get('titulo', p['id'])} =====", flush=True)
+        enun = p["enunciado"] + (("\nPista de estrategia: " + p["idea"]) if p.get("idea") and not a.sin_pistas else "")
+        a.problema, a.enunciado = None, None
+        pr = {"id": p["id"], "enunciado": enun, "backend": a.pista if a.pista in ("lean", "sympy") else p.get("backend", "lean"),
+              "dominio": "curriculo", "etiquetas": p.get("etiquetas", [])}
+        cfg = construir_config(a, pr)
+        motor = Motor(cfg, LLM(cfg), crear_verificador(cfg), base_dir / "runs" / p["id"])
+        try:
+            codigo = motor.ejecutar(pr, False)
+        except RuntimeError as e:
+            print(f"ERROR: {e}")
+            return 2
+        prog[p["id"]] = {0: "verificado", 1: "fallido"}.get(codigo, "pausado")
+        escribir_atomico(prog_path, json.dumps(prog, ensure_ascii=False, indent=1))
+        if codigo == 0:
+            resueltos += 1
+        elif codigo != 1 or not a.seguir:
+            print(f"\nCurrículo detenido en el nivel {p.get('nivel')} (código {codigo}). Vuelve a ejecutar el mismo comando para continuar.")
+            return codigo
+    print(f"\nCurrículo '{a.pista}': {resueltos}/{len(lista)} verificados. Biblioteca: {a.biblioteca}")
+    return 0
 
 
 def construir_parser() -> argparse.ArgumentParser:
@@ -1304,6 +1424,23 @@ def construir_parser() -> argparse.ArgumentParser:
     r.add_argument("--semilla", type=int, default=1)
     r.add_argument("--sin-fidelidad", action="store_true", help="no comprobar con el modelo que el enunciado formal es fiel")
     r.add_argument("--reiniciar", action="store_true", help="descartar el estado guardado y empezar de cero")
+    r.add_argument("--biblioteca", default="", help="JSON de demostraciones verificadas: se usan como ejemplos y se amplía al resolver")
+    c = sub.add_parser("curriculo", help="resolver en orden un currículo de problemas cada vez más difíciles")
+    c.add_argument("--archivo", default="curriculo/curriculo.json")
+    c.add_argument("--pista", choices=["lean", "sympy", "abiertos"], default="lean")
+    c.add_argument("--dir", default="curriculo_runs", help="carpeta de progreso, estados y biblioteca (usa Drive en Colab)")
+    c.add_argument("--desde", type=int, default=0)
+    c.add_argument("--hasta", type=int, default=0)
+    c.add_argument("--seguir", action="store_true", help="si un nivel no se resuelve, seguir con el siguiente")
+    c.add_argument("--sin-pistas", action="store_true", help="no añadir la 'idea' del currículo al enunciado")
+    c.add_argument("--biblioteca", default="")
+    for k, d in (("modelo", MODELO_DEFECTO), ("ollama_url", None), ("lean", ""), ("lake_dir", "")):
+        c.add_argument("--" + k.replace("_", "-"), default=d)
+    c.add_argument("--mathlib", action="store_true")
+    for k, d in (("horas", 0.0), ("max_intentos", 0), ("directos", 6), ("finales", 6), ("replanes", 3), ("profundidad", 2),
+                 ("num_ctx", 8192), ("num_predict", 700), ("timeout_lean", 90), ("semilla", 1)):
+        c.add_argument("--" + k.replace("_", "-"), type=type(d), default=d)
+    c.add_argument("--sin-fidelidad", action="store_true")
     sub.add_parser("problemas", help="listar los problemas de ejemplo incluidos")
     e = sub.add_parser("estado", help="mostrar el progreso de una ejecución")
     e.add_argument("--dir", required=True)
@@ -1320,6 +1457,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     a = construir_parser().parse_args(argv)
     if a.cmd == "resolver":
         return cmd_resolver(a)
+    if a.cmd == "curriculo":
+        return cmd_curriculo(a)
     if a.cmd == "problemas":
         for k, v in PROBLEMAS_INCLUIDOS.items():
             print(f"{k}  [{v['backend']}, {v['dominio']}]  {v['enunciado'][:110]}")

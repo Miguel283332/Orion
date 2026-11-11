@@ -1,0 +1,291 @@
+{
+  "version": 1,
+  "lean": [
+    {
+      "nivel": 1,
+      "id": "cota_suma_lineal",
+      "titulo": "Una cota a partir de una suma",
+      "enunciado": "Demuestra en Lean 4 (sin Mathlib) que para todos los números naturales a y b, si a + b = 10 entonces a ≤ 10 y b ≤ 10. Formalización: `theorem cota_suma_lineal (a b : Nat) (h : a + b = 10) : a ≤ 10 ∧ b ≤ 10`.",
+      "idea": "Es aritmética lineal pura sobre Nat: separa la conjunción con `constructor` y cierra cada parte con `omega`, o cierra todo directamente con `omega`.",
+      "etiquetas": ["omega", "conjuncion", "aritmetica_lineal"]
+    },
+    {
+      "nivel": 2,
+      "id": "impar_mas_uno_es_par",
+      "titulo": "Sucesor de un impar",
+      "enunciado": "Demuestra en Lean 4 (sin Mathlib) que para todo natural n, si n % 2 = 1 entonces (n + 1) % 2 = 0. Formalización: `theorem impar_mas_uno_es_par (n : Nat) (h : n % 2 = 1) : (n + 1) % 2 = 0`.",
+      "idea": "Introduce la hipótesis y usa `omega`, que entiende el módulo por una constante literal.",
+      "etiquetas": ["omega", "implicacion", "paridad", "modulo"]
+    },
+    {
+      "nivel": 3,
+      "id": "existe_multiplo_de_tres_mayor",
+      "titulo": "Existe un múltiplo de 3 mayor que n",
+      "enunciado": "Demuestra en Lean 4 (sin Mathlib) que para todo natural n existe un natural m tal que m > n y m % 3 = 0. Formalización: `theorem existe_multiplo_de_tres_mayor (n : Nat) : ∃ m : Nat, m > n ∧ m % 3 = 0`.",
+      "idea": "Da el testigo explícito `3 * (n + 1)` con `exact ⟨3 * (n + 1), by omega, by omega⟩` (o `refine` seguido de `constructor`).",
+      "etiquetas": ["existencial", "testigo", "omega", "modulo"]
+    },
+    {
+      "nivel": 4,
+      "id": "multiplo_de_seis_implica_dos_y_tres",
+      "titulo": "Múltiplos de 6",
+      "enunciado": "Demuestra en Lean 4 (sin Mathlib) que para todo natural n, si n % 6 = 0 entonces n % 2 = 0 y n % 3 = 0. Formalización: `theorem multiplo_de_seis (n : Nat) (h : n % 6 = 0) : n % 2 = 0 ∧ n % 3 = 0`.",
+      "idea": "Separa la conjunción con `constructor` y resuelve cada objetivo con `omega` usando la hipótesis h.",
+      "etiquetas": ["omega", "conjuncion", "divisibilidad", "modulo"]
+    },
+    {
+      "nivel": 5,
+      "id": "suma_de_dos_impares",
+      "titulo": "Suma de dos impares",
+      "enunciado": "Demuestra en Lean 4 (sin Mathlib) que para todos los naturales a y b, si a % 2 = 1 y b % 2 = 1 entonces (a + b) % 2 = 0 y además (a + b + 1) % 2 = 1. Formalización: `theorem suma_de_dos_impares (a b : Nat) (ha : a % 2 = 1) (hb : b % 2 = 1) : (a + b) % 2 = 0 ∧ (a + b + 1) % 2 = 1`.",
+      "idea": "Dos variables y dos hipótesis, todo lineal con módulo literal: `constructor <;> omega`.",
+      "etiquetas": ["omega", "conjuncion", "paridad", "dos_variables"]
+    },
+    {
+      "nivel": 6,
+      "id": "cota_division_entera_por_dos",
+      "titulo": "Cotas de la división entera por 2",
+      "enunciado": "Demuestra en Lean 4 (sin Mathlib) que para todo natural n se cumple 2 * (n / 2) ≤ n y n < 2 * (n / 2) + 2. Formalización: `theorem cota_division (n : Nat) : 2 * (n / 2) ≤ n ∧ n < 2 * (n / 2) + 2`.",
+      "idea": "`omega` soporta la división entera por constantes literales; basta `constructor <;> omega`.",
+      "etiquetas": ["omega", "division_entera", "desigualdades"]
+    },
+    {
+      "nivel": 7,
+      "id": "menor_o_igual_implica_diferencia",
+      "titulo": "Desigualdad y existencia de la diferencia",
+      "enunciado": "Demuestra en Lean 4 (sin Mathlib) que para todos los naturales a y b, si a ≤ b entonces existe un natural c con b = a + c, y que si además a < b entonces existe un natural d con b = a + d + 1. Formalización: `theorem diferencia (a b : Nat) (h : a ≤ b) : (∃ c : Nat, b = a + c) ∧ (a < b → ∃ d : Nat, b = a + d + 1)`.",
+      "idea": "Construye los testigos `b - a` y `b - a - 1` y cierra las igualdades con `omega`; para la segunda parte introduce la hipótesis `a < b` con `intro`.",
+      "etiquetas": ["existencial", "testigo", "implicacion", "omega", "desigualdades"]
+    },
+    {
+      "nivel": 8,
+      "id": "producto_de_impares_es_impar",
+      "titulo": "El producto de dos impares es impar",
+      "enunciado": "Demuestra en Lean 4 (sin Mathlib) que para todos los naturales a y b, si a % 2 = 1 y b % 2 = 1 entonces (a * b) % 2 = 1. Formalización: `theorem producto_impares (a b : Nat) (ha : a % 2 = 1) (hb : b % 2 = 1) : (a * b) % 2 = 1`.",
+      "idea": "El producto no es lineal, así que `omega` no basta: reescribe con `Nat.mul_mod`, sustituye ha y hb y cierra con `simp` o `norm_num`/`decide` sobre el resultado numérico.",
+      "etiquetas": ["modulo", "Nat.mul_mod", "rw", "simp", "paridad"]
+    },
+    {
+      "nivel": 9,
+      "id": "cuadrado_modulo_cuatro",
+      "titulo": "Cuadrados módulo 4",
+      "enunciado": "Demuestra en Lean 4 (sin Mathlib) que para todo natural n, (n * n) % 4 = 0 o (n * n) % 4 = 1. Formalización: `theorem cuadrado_mod_cuatro (n : Nat) : (n * n) % 4 = 0 ∨ (n * n) % 4 = 1`.",
+      "idea": "Distingue los cuatro casos de n % 4 (con `omega` obtén `n % 4 = 0 ∨ ... ∨ n % 4 = 3` y `rcases`), reescribe con `Nat.mul_mod` y calcula con `simp [h]`.",
+      "etiquetas": ["casos", "rcases", "modulo", "Nat.mul_mod", "disyuncion"]
+    },
+    {
+      "nivel": 10,
+      "id": "suma_de_impares_es_cuadrado",
+      "titulo": "La suma de los n primeros impares es n²",
+      "enunciado": "En Lean 4 (sin Mathlib) define la función recursiva `def sumaImpares : Nat → Nat | 0 => 0 | n + 1 => sumaImpares n + (2 * n + 1)` y demuestra que para todo natural n, `sumaImpares n = n * n`.",
+      "idea": "Inducción simple sobre n: el caso base es `rfl`; en el paso desarrolla con `simp [sumaImpares, ih]`, expande `(n + 1) * (n + 1)` con `Nat.add_mul`/`Nat.mul_add` (o `Nat.succ_mul`) y termina con `omega`.",
+      "etiquetas": ["induccion", "def_recursiva", "simp", "nlinealidad"]
+    },
+    {
+      "nivel": 11,
+      "id": "n_menor_que_dos_pot_n",
+      "titulo": "n < 2^n",
+      "enunciado": "Demuestra en Lean 4 (sin Mathlib) que para todo natural n se cumple n < 2 ^ n. Formalización: `theorem lt_two_pow (n : Nat) : n < 2 ^ n`.",
+      "idea": "Inducción sobre n; en el paso reescribe `2 ^ (n + 1) = 2 ^ n * 2` con `Nat.pow_succ` y cierra con `omega` usando la hipótesis de inducción (2 ^ n se trata como átomo).",
+      "etiquetas": ["induccion", "potencias", "Nat.pow_succ", "omega"]
+    },
+    {
+      "nivel": 12,
+      "id": "suma_de_gauss_recursiva",
+      "titulo": "Fórmula de Gauss con suma recursiva",
+      "enunciado": "En Lean 4 (sin Mathlib) define `def suma : Nat → Nat | 0 => 0 | n + 1 => suma n + (n + 1)` (la suma 1 + 2 + ... + n) y demuestra que para todo natural n, `2 * suma n = n * (n + 1)`.",
+      "idea": "Inducción sobre n; en el paso despliega `suma (n + 1)`, usa la hipótesis de inducción y expande el producto `(n + 1) * (n + 2)` con `Nat.mul_add`/`Nat.add_mul` antes de `omega`.",
+      "etiquetas": ["induccion", "def_recursiva", "suma", "nlinealidad"]
+    },
+    {
+      "nivel": 13,
+      "id": "factorial_positivo_y_cota",
+      "titulo": "Factorial: positividad y cota inferior",
+      "enunciado": "En Lean 4 (sin Mathlib) define `def fact : Nat → Nat | 0 => 1 | n + 1 => (n + 1) * fact n` y demuestra, para todo natural n, las dos propiedades `0 < fact n` y `n ≤ fact n`. Se recomienda probar primero la positividad como lema auxiliar y usarla en la segunda.",
+      "idea": "Lema 1 por inducción con `Nat.mul_pos`; lema 2 por inducción usando que `n + 1 ≤ (n + 1) * fact n` (por ejemplo con `Nat.le_mul_of_pos_right` y el lema 1).",
+      "etiquetas": ["induccion", "def_recursiva", "lema_auxiliar", "Nat.mul_pos", "desigualdades"]
+    },
+    {
+      "nivel": 14,
+      "id": "suma_recursiva_correcta_y_conmutativa",
+      "titulo": "Suma recursiva: corrección y conmutatividad",
+      "enunciado": "En Lean 4 (sin Mathlib) define `def sumaR : Nat → Nat → Nat | a, 0 => a | a, b + 1 => sumaR a b + 1`. Demuestra (1) para todos a y b, `sumaR a b = a + b`; y (2) para todos a y b, `sumaR a b = sumaR b a`.",
+      "idea": "La propiedad (1) sale por inducción sobre b con `simp [sumaR, ih]`; (2) se deduce rápidamente reescribiendo con (1) y usando `Nat.add_comm` u `omega`.",
+      "etiquetas": ["induccion", "def_recursiva", "dos_variables", "lema_auxiliar", "conmutatividad"]
+    },
+    {
+      "nivel": 15,
+      "id": "suma_de_potencias_de_dos",
+      "titulo": "Suma de potencias de 2",
+      "enunciado": "En Lean 4 (sin Mathlib) define `def sp : Nat → Nat | 0 => 1 | n + 1 => sp n + 2 ^ (n + 1)` (es 1 + 2 + 4 + ... + 2^n) y demuestra que para todo natural n, `sp n + 1 = 2 ^ (n + 1)`.",
+      "idea": "Inducción sobre n; en el paso despliega `sp (n + 1)`, reescribe `2 ^ (n + 2)` y `2 ^ (n + 1)` con `Nat.pow_succ` para que `omega` cierre tratando `2 ^ (n + 1)` como átomo.",
+      "etiquetas": ["induccion", "def_recursiva", "potencias", "Nat.pow_succ", "omega"]
+    },
+    {
+      "nivel": 16,
+      "id": "fibonacci_acotado_por_potencia_de_dos",
+      "titulo": "Fibonacci ≤ 2^n",
+      "enunciado": "En Lean 4 (sin Mathlib) define `def fib : Nat → Nat | 0 => 0 | 1 => 1 | n + 2 => fib (n + 1) + fib n` y demuestra que para todo natural n, `fib n ≤ 2 ^ n`.",
+      "idea": "Inducción fuerte (o inducción doble sobre el par n, n+1): casos n = 0, n = 1 y paso n + 2 usando las dos hipótesis y `2 ^ (n + 2) = 2 ^ n * 4` (`Nat.pow_succ`), cerrando con `omega`.",
+      "etiquetas": ["induccion_fuerte", "def_recursiva", "fibonacci", "potencias", "omega"]
+    },
+    {
+      "nivel": 17,
+      "id": "mcd_euclides_divide",
+      "titulo": "El mcd de Euclides divide a ambos números",
+      "enunciado": "En Lean 4 (sin Mathlib) define `def mcd (a b : Nat) : Nat := if h : b = 0 then a else mcd b (a % b) termination_by b decreasing_by exact Nat.mod_lt _ (Nat.pos_of_ne_zero h)`. Demuestra que para todos a y b, `a % mcd a b = 0 ∧ b % mcd a b = 0`. (Convención de Nat: n % 0 = n, de modo que el caso a = b = 0 también se cumple.)",
+      "idea": "Inducción fuerte sobre b (o `induction b using Nat.strongRecOn` generalizando a): si b = 0 usa `mcd a 0 = a` y `Nat.mod_self`; si no, aplica la hipótesis a (b, a % b) y reconstruye a con `Nat.mod_add_div`, probando antes un lema de divisibilidad con `%`.",
+      "etiquetas": ["induccion_fuerte", "def_recursiva", "mcd", "divisibilidad", "lemas_encadenados"]
+    },
+    {
+      "nivel": 18,
+      "id": "fibonacci_consecutivos_coprimos",
+      "titulo": "Fibonacci consecutivos son coprimos",
+      "enunciado": "En Lean 4 (sin Mathlib) con `fib` y `mcd` definidos como antes (fib 0 = 0, fib 1 = 1, fib (n + 2) = fib (n + 1) + fib n; mcd por el algoritmo de Euclides con `%`), demuestra que para todo natural n, `mcd (fib (n + 1)) (fib n) = 1`. Se sugiere probar antes los lemas auxiliares `mcd a 0 = a`, `mcd a b = mcd b (a % b)` para b ≠ 0 y `mcd (a + b) b = mcd a b`.",
+      "idea": "Inducción sobre n con el paso `mcd (fib (n + 2)) (fib (n + 1)) = mcd (fib (n + 1) + fib n) (fib (n + 1)) = mcd (fib n) (fib (n + 1))`; hace falta además la simetría `mcd a b = mcd b a` (por inducción fuerte) para enlazar con la hipótesis, o bien reformular el invariante con ambos órdenes a la vez.",
+      "etiquetas": ["induccion", "def_recursiva", "fibonacci", "mcd", "lemas_encadenados", "dos_variables"]
+    }
+  ],
+  "sympy": [
+    {
+      "nivel": 1,
+      "id": "velocidad_de_escape_newton",
+      "titulo": "Velocidad de escape newtoniana",
+      "enunciado": "Una masa de prueba m parte de la distancia r > 0 del centro de un cuerpo esférico de masa M, con velocidad v hacia fuera. Hipótesis: gravedad newtoniana, energía mecánica conservada y escape cuando la energía total vale 0 (llega al infinito con velocidad nula). Deriva con SymPy que v_esc = sqrt(2*G*M/r), partiendo de la ecuación (1/2)*m*v**2 - G*M*m/r = 0. Criterio: v_esc**2 - 2*G*M/r se simplifica a 0 y v_esc > 0 para G, M, r positivos.",
+      "idea": "Plantea la energía total como expresión simbólica, resuelve para v con `solve` (o `sympy.solve`) eligiendo la raíz positiva y simplifica.",
+      "etiquetas": ["energia", "solve", "newton"]
+    },
+    {
+      "nivel": 2,
+      "id": "orbita_circular_newton",
+      "titulo": "Órbita circular y periodo",
+      "enunciado": "Una masa pequeña describe una órbita circular de radio r alrededor de una masa M (gravedad newtoniana, M >> m). Igualando la fuerza gravitatoria G*M*m/r**2 con la fuerza centrípeta m*v**2/r, deriva la velocidad orbital v = sqrt(G*M/r) y el periodo T = 2*pi*r/v = 2*pi*sqrt(r**3/(G*M)). Criterio: v**2 - G*M/r y T**2 - 4*pi**2*r**3/(G*M) se simplifican a 0.",
+      "idea": "Resuelve la igualdad de fuerzas para v con `solve`, define T = 2*pi*r/v y comprueba con `simplify` que T**2 coincide con la expresión pedida.",
+      "etiquetas": ["orbitas", "solve", "newton"]
+    },
+    {
+      "nivel": 3,
+      "id": "tercera_ley_de_kepler",
+      "titulo": "Tercera ley de Kepler",
+      "enunciado": "Para órbitas circulares de radio a alrededor de una masa M (gravedad newtoniana), demuestra simbólicamente que T**2 = 4*pi**2*a**3/(G*M), y por tanto que el cociente T**2/a**3 no depende de a (su derivada respecto de a es 0). Criterio: diff(T**2/a**3, a) se simplifica a 0 y T**2*G*M/(4*pi**2*a**3) se simplifica a 1.",
+      "idea": "Parte de la velocidad orbital del problema anterior, construye T y verifica la derivada respecto de a con `diff` y `simplify`.",
+      "etiquetas": ["kepler", "diff", "simplify"]
+    },
+    {
+      "nivel": 4,
+      "id": "fuerza_de_marea_newton",
+      "titulo": "Fuerza de marea",
+      "enunciado": "Un cuerpo de masa m y longitud pequeña L está orientado radialmente a distancia r de una masa M (gravedad newtoniana). La fuerza gravitatoria es F(r) = G*M*m/r**2. Deriva la diferencia de fuerza entre sus extremos en el límite L << r: la aceleración de marea es a_marea = 2*G*M*L/r**3 (en módulo). Criterio: derivada de F respecto de r, evaluada en r y multiplicada por -L, es igual a 2*G*M*m*L/r**3 (expresión simbólica, simplificada); y el desarrollo de Taylor de F(r+L) - F(r) a primer orden en L da -2*G*M*m*L/r**3 (signo: la fuerza disminuye al alejarse).",
+      "idea": "Deriva F con `diff` o usa `series` de F(r+L) en L hasta primer orden y compara con la expresión objetivo.",
+      "etiquetas": ["mareas", "diff", "series"]
+    },
+    {
+      "nivel": 5,
+      "id": "radio_de_schwarzschild",
+      "titulo": "Radio de Schwarzschild",
+      "enunciado": "Hipótesis: se impone formalmente (argumento heurístico, que coincide con el resultado exacto de la relatividad general) que la velocidad de escape newtoniana v = sqrt(2*G*M/r) iguale la velocidad de la luz c. Deriva r_s = 2*G*M/c**2. Después calcula numéricamente r_s para M = 1 masa solar (M_sol = 1.989e30 kg, G = 6.674e-11 m**3/(kg*s**2), c = 2.998e8 m/s) y comprueba que está entre 2.9e3 m y 3.0e3 m. Criterio: r_s - 2*G*M/c**2 se simplifica a 0 y el valor numérico está en el intervalo indicado.",
+      "idea": "Resuelve sqrt(2*G*M/r) = c para r con `solve` y sustituye valores con `subs`/`evalf`.",
+      "etiquetas": ["schwarzschild", "solve", "numerico"]
+    },
+    {
+      "nivel": 6,
+      "id": "dilatacion_temporal_schwarzschild",
+      "titulo": "Dilatación gravitatoria del tiempo y corrimiento al rojo",
+      "enunciado": "En la métrica de Schwarzschild (G = c = 1 o con r_s = 2*G*M/c**2), un observador estático a radio r > r_s tiene tiempo propio dtau = sqrt(1 - r_s/r)*dt, donde t es el tiempo del observador en el infinito. Un emisor estático en r emite luz de frecuencia nu_e y un observador en el infinito la recibe con nu_inf = nu_e*sqrt(1 - r_s/r). Deriva el corrimiento al rojo z = 1/sqrt(1 - r_s/r) - 1 y demuestra que, para r >> r_s, z ≈ r_s/(2*r) = G*M/(r*c**2) (primer orden). Criterio: series(z, r_s, 0, 2) tiene término lineal r_s/(2*r), y z vale 0 en el límite r -> oo.",
+      "idea": "Define z como expresión en r_s y r, expándela con `series` en r_s alrededor de 0 y calcula `limit` cuando r tiende a infinito.",
+      "etiquetas": ["redshift", "schwarzschild", "series", "limit"]
+    },
+    {
+      "nivel": 7,
+      "id": "potencial_efectivo_schwarzschild",
+      "titulo": "Potencial efectivo de Schwarzschild y órbita circular",
+      "enunciado": "Para una partícula masiva en geodésica ecuatorial de Schwarzschild, con unidades G = c = 1 y masa central M, la ecuación radial por unidad de masa es E**2 = (dr/dtau)**2 + V(r), con V(r) = (1 - 2*M/r)*(1 + L**2/r**2), donde E y L son la energía y el momento angular específicos conservados. Deriva las condiciones de órbita circular dV/dr = 0 y demuestra que L**2 = M*r**2/(r - 3*M) y E**2 = (1 - 2*M/r)**2/(1 - 3*M/r) para r > 3*M. Criterio: diff(V, r) se anula al sustituir L**2 por la expresión dada, y V evaluado ahí coincide con E**2.",
+      "idea": "Deriva V con `diff`, resuelve dV/dr = 0 para L**2 con `solve`, y sustituye para obtener E**2 simplificando.",
+      "etiquetas": ["potencial_efectivo", "geodesicas", "solve", "diff"]
+    },
+    {
+      "nivel": 8,
+      "id": "esfera_de_fotones",
+      "titulo": "Esfera de fotones: r = 3GM/c²",
+      "enunciado": "Para un rayo de luz (masa nula) en órbita circular ecuatorial de Schwarzschild, con G = c = 1 el potencial efectivo por unidad de L**2 es W(r) = (1 - 2*M/r)/r**2. Deriva que la órbita circular exige dW/dr = 0 y que la única solución con r > 0 es r = 3*M (en unidades con constantes: r = 3*G*M/c**2). Demuestra además que ahí W tiene un máximo (d2W/dr2 < 0 en r = 3*M), es decir, la órbita es inestable. Criterio: solve(diff(W, r), r) devuelve [3*M] para r > 0 y diff(W, r, 2) evaluada en r = 3*M es negativa para M > 0.",
+      "idea": "Usa `diff` y `solve` sobre W(r), y evalúa la segunda derivada en la raíz con `subs` y `simplify`.",
+      "etiquetas": ["fotones", "potencial_efectivo", "solve", "diff"]
+    },
+    {
+      "nivel": 9,
+      "id": "isco_schwarzschild",
+      "titulo": "ISCO: r = 6GM/c²",
+      "enunciado": "Con el potencial efectivo V(r) = (1 - 2*M/r)*(1 + L**2/r**2) (G = c = 1), las órbitas circulares cumplen dV/dr = 0 y son estables si d2V/dr2 > 0. Demuestra que, tras imponer L**2 = M*r**2/(r - 3*M), la condición de estabilidad marginal d2V/dr2 = 0 se cumple en r = 6*M (en unidades con constantes: r = 6*G*M/c**2) y que para r > 6*M se tiene d2V/dr2 > 0. Criterio: d2V/dr2, evaluada con ese L**2 en r = 6*M, se simplifica a 0 y en r = 7*M da un valor positivo para M > 0.",
+      "idea": "Calcula `diff(V, r, 2)`, sustituye L**2 de la órbita circular y resuelve la ecuación resultante con `solve` o factoriza con `factor`.",
+      "etiquetas": ["isco", "potencial_efectivo", "diff", "solve", "estabilidad"]
+    },
+    {
+      "nivel": 10,
+      "id": "temperatura_de_hawking",
+      "titulo": "Temperatura de Hawking como relación",
+      "enunciado": "Se toma como dato la temperatura de Hawking de un agujero negro de Schwarzschild de masa M: T = hbar*c**3/(8*pi*G*M*k_B). Demuestra simbólicamente que T es inversamente proporcional a M (T*M es constante, su derivada respecto de M es 0) y calcula numéricamente T para una masa solar (M = 1.989e30 kg, hbar = 1.0546e-34 J*s, c = 2.998e8 m/s, G = 6.674e-11 SI, k_B = 1.381e-23 J/K), comprobando que está entre 5e-8 K y 7e-8 K. Criterio: diff(T*M, M) se simplifica a 0 y el valor numérico cae en el intervalo.",
+      "idea": "Define T con símbolos positivos, comprueba la derivada de T*M con `diff` y sustituye los valores numéricos con `subs`/`evalf`.",
+      "etiquetas": ["hawking", "termodinamica", "numerico", "diff"]
+    },
+    {
+      "nivel": 11,
+      "id": "entropia_bekenstein_hawking",
+      "titulo": "Entropía de Bekenstein-Hawking y primer principio",
+      "enunciado": "Sea r_s = 2*G*M/c**2, el área del horizonte A = 4*pi*r_s**2 y la entropía S = k_B*c**3*A/(4*G*hbar). Demuestra simbólicamente que S = 4*pi*k_B*G*M**2/(hbar*c) y que S es proporcional al área (S/A es constante respecto de M). Con T = hbar*c**3/(8*pi*G*M*k_B) y E = M*c**2, comprueba el primer principio dE = T*dS, es decir, que dS/dM = c**2/T. Criterio: simplify(S - 4*pi*k_B*G*M**2/(hbar*c)) = 0, diff(S/A, M) = 0 y simplify(diff(S, M) - c**2/T) = 0.",
+      "idea": "Sustituye r_s en A y S, simplifica, deriva S respecto de M con `diff` y compara con c**2/T usando `simplify`.",
+      "etiquetas": ["entropia", "bekenstein_hawking", "termodinamica", "diff", "simplify"]
+    },
+    {
+      "nivel": 12,
+      "id": "schwarzschild_vacio_einstein",
+      "titulo": "Schwarzschild resuelve las ecuaciones de vacío",
+      "enunciado": "Con coordenadas (t, r, theta, phi), unidades G = c = 1 y signatura (-,+,+,+), considera la métrica de Schwarzschild ds**2 = -(1 - 2*M/r)*dt**2 + dr**2/(1 - 2*M/r) + r**2*dtheta**2 + r**2*sin(theta)**2*dphi**2 (diagonal, M > 0 constante, r > 2*M). Calcula con SymPy los símbolos de Christoffel, el tensor de Riemann y el tensor de Ricci R_{mu nu} y demuestra que todas sus componentes son idénticamente cero (ecuaciones de vacío de Einstein R_{mu nu} = 0). Como comprobación de contraste, el escalar de Kretschmann debe valer 48*M**2/r**6 (distinto de cero: la singularidad es real). Criterio: cada componente de Ricci se simplifica a 0 y Kretschmann - 48*M**2/r**6 se simplifica a 0.",
+      "idea": "Implementa Christoffel con la fórmula Gamma^a_{bc} = (1/2) g^{ad}(d_b g_{dc} + d_c g_{db} - d_d g_{bc}), construye Riemann y Ricci por contracción con `diff` y `simplify` componente a componente, y contrasta con Kretschmann.",
+      "etiquetas": ["relatividad_general", "ricci", "christoffel", "tensores", "schwarzschild", "diff", "simplify"]
+    }
+  ],
+  "abiertos": [
+    {
+      "id": "conjetura_de_goldbach",
+      "titulo": "Conjetura de Goldbach",
+      "enunciado": "Todo número par mayor que 2 es la suma de dos números primos.",
+      "backend": "lean",
+      "nota": "Versión acotada verificable (sin Mathlib): definir `esPrimo (p : Nat) : Bool` por divisores menores que p y comprobar con `decide` (o `native_decide` si se permite) que todo par n con 4 ≤ n ≤ 1000 es suma de dos primos. El enunciado general para todos los pares sigue ABIERTO; no se afirma que el sistema pueda resolverlo."
+    },
+    {
+      "id": "conjetura_de_collatz",
+      "titulo": "Conjetura de Collatz (3n+1)",
+      "enunciado": "Partiendo de cualquier entero positivo n y aplicando repetidamente n -> n/2 si n es par y n -> 3n+1 si es impar, se llega siempre a 1.",
+      "backend": "lean",
+      "nota": "Versión acotada verificable: definir la función de pasos con combustible (fuel) de forma recursiva y demostrar por `decide` que para todo n con 1 ≤ n ≤ 200 se alcanza 1 en a lo sumo, p. ej., 150 pasos (el máximo para n ≤ 200 es 124, alcanzado por n = 171). El enunciado general sigue ABIERTO; no se afirma que el sistema pueda resolverlo."
+    },
+    {
+      "id": "primos_gemelos",
+      "titulo": "Conjetura de los primos gemelos",
+      "enunciado": "Existen infinitos pares de primos (p, p+2).",
+      "backend": "lean",
+      "nota": "Versión acotada verificable: con `esPrimo` definido por divisores, demostrar por `decide` que para cada cota N en un rango pequeño (por ejemplo N = 10, 100, 1000) existe un par de gemelos (p, p+2) con p > N hasta un límite explícito, o exhibir testigos concretos como (3,5), (11,13), (101,103). La afirmación de infinitud sigue ABIERTA; no se afirma que el sistema pueda resolverla."
+    },
+    {
+      "id": "numero_perfecto_impar",
+      "titulo": "No existen números perfectos impares",
+      "enunciado": "Ningún número impar es igual a la suma de sus divisores propios positivos (conjetura abierta: no se conoce ningún número perfecto impar).",
+      "backend": "lean",
+      "nota": "Versión acotada verificable: definir recursivamente la suma de divisores propios `sigmaPropia n` y comprobar por `decide` que ningún impar n con 1 ≤ n ≤ 2000 cumple sigmaPropia n = n (y que los pares 6 y 28 sí son perfectos). La no existencia general sigue ABIERTA (hay cotas computacionales enormes, pero no demostración); no se afirma que el sistema pueda resolverla."
+    },
+    {
+      "id": "conjetura_de_legendre",
+      "titulo": "Conjetura de Legendre",
+      "enunciado": "Para todo entero n ≥ 1 existe un primo p con n**2 < p < (n+1)**2.",
+      "backend": "lean",
+      "nota": "Versión acotada verificable: con `esPrimo` por divisores, comprobar por `decide` que para todo n con 1 ≤ n ≤ 100 existe un primo en el intervalo (n*n, (n+1)*(n+1)). El enunciado general sigue ABIERTO; no se afirma que el sistema pueda resolverlo."
+    },
+    {
+      "id": "erdos_straus",
+      "titulo": "Conjetura de Erdős–Straus",
+      "enunciado": "Para todo entero n ≥ 2 existen enteros positivos x, y, z con 4/n = 1/x + 1/y + 1/z; sin fracciones: 4*x*y*z = n*(x*y + y*z + z*x).",
+      "backend": "lean",
+      "nota": "Versión acotada verificable: para cada n con 2 ≤ n ≤ 100 buscar con `decide` (o aportando testigos explícitos por `exact ⟨x, y, z, ...⟩`) una terna que cumpla 4*x*y*z = n*(x*y + y*z + z*x), con x, y, z acotados por n**2 o similar. La conjetura general (todo n) sigue ABIERTA, aunque está comprobada por ordenador hasta cotas muy grandes; no se afirma que el sistema pueda resolverla."
+    }
+  ]
+}

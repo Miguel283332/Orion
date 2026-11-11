@@ -61,7 +61,7 @@ json OllamaLlm::post(const std::string& ruta, const json& payload, int reintento
 }
 
 std::string OllamaLlm::chat(const std::string& sistema, const std::string& usuario, double temperatura, int num_predict, int seed, bool json_mode) {
-    json payload = {{"model", modelo_}, {"stream", false},
+    json payload = {{"model", modelo_}, {"stream", false}, {"keep_alive", "60m"},
                     {"messages", json::array({{{"role", "system"}, {"content", sistema}}, {{"role", "user"}, {"content", usuario}}})},
                     {"options", {{"temperature", temperatura}, {"num_predict", num_predict}, {"num_ctx", num_ctx_}, {"seed", seed}}}};
     if (json_mode) payload["format"] = "json";

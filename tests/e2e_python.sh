@@ -56,6 +56,32 @@ start_mock "$W/reglas_lean.json"
 $D resolver --problema "$ROOT/problemas/facil_par_mayor.json" --lean "$ROOT/tests/mock_lean.py" --dir "$W/r3" --max-intentos 2 > "$W/r3.log" 2>&1; RC=$?
 [ $RC -eq 3 ] && grep -q "PAUSADO" "$W/r3.log" && ok "--max-intentos: pausa ordenada (3)" || bad "pausa por presupuesto (salida $RC)"
 
+
+# ---------------------------------------------------------------- currículo: 2 niveles; el 2.º recibe el 1.º como ejemplo verificado
+python3 - "$W" <<'PY'
+import json, sys
+W = sys.argv[1]
+F1 = "theorem cur_a (n : Nat) (h : n % 2 = 1) : (n + 1) % 2 = 0 := by"
+F2 = "theorem cur_b (n : Nat) (h : n % 4 = 1) : (n + 3) % 4 = 0 := by"
+json.dump({"version": 1, "lean": [
+  {"nivel": 1, "id": "cur_a", "titulo": "A", "enunciado": "Si n es impar entonces n + 1 es par (resto modulo 2).", "idea": "omega", "etiquetas": ["omega"]},
+  {"nivel": 2, "id": "cur_b", "titulo": "B", "enunciado": "Si n es impar con resto 1 modulo 4 entonces n + 3 es multiplo de 4 (resto modulo).", "idea": "omega", "etiquetas": ["omega"]}]},
+  open(W + "/cur.json", "w"), ensure_ascii=False)
+json.dump({"teoremas": [{"enunciado_contiene": "cur_a", "acepta_contiene": ["omega"], "axiomas": ["propext"]},
+                        {"enunciado_contiene": "cur_b", "acepta_contiene": ["omega"], "axiomas": ["propext"]}]}, open(W + "/or_cur.json", "w"))
+reglas = []
+for F, k in ((F1, "Si n es impar entonces"), (F2, "Si n es impar con resto")):
+    reglas += [{"cuando": ["Traduce el siguiente problema", k], "responde": {"definiciones": "", "teorema": F}},
+               {"cuando": ["Demuestra este teorema en Lean 4", F.split(" (")[0]], "responde": "```lean\n" + F + "\n  omega\n```"}]
+json.dump(reglas, open(W + "/reglas_cur.json", "w"), ensure_ascii=False)
+PY
+export MOCK_LEAN_ORACLE="$W/or_cur.json"
+start_mock "$W/reglas_cur.json"
+$D curriculo --archivo "$W/cur.json" --pista lean --lean "$ROOT/tests/mock_lean.py" --dir "$W/cur" --sin-fidelidad > "$W/cur.log" 2>&1; RC=$?
+[ $RC -eq 0 ] && grep -q "2/2 verificados" "$W/cur.log" && ok "currículo: 2/2 niveles verificados" || { bad "currículo (salida $RC)"; cat "$W/cur.log"; }
+python3 -c "import json;b=json.load(open('$W/cur/biblioteca_lean.json'));assert len(b)==2" 2>/dev/null && ok "currículo: la biblioteca guarda las demostraciones verificadas" || bad "biblioteca"
+$D curriculo --archivo "$W/cur.json" --pista lean --lean "$ROOT/tests/mock_lean.py" --dir "$W/cur" 2>&1 | grep -q "ya verificado" && ok "currículo: reanuda sin repetir niveles resueltos" || bad "currículo reanudación"
+
 # ---------------------------------------------------------------- sin Ollama: error claro y estado a salvo
 kill $MOCK 2>/dev/null; sleep 0.3
 $D resolver --problema "$ROOT/problemas/facil_par_mayor.json" --lean "$ROOT/tests/mock_lean.py" --dir "$W/r3" > "$W/r4.log" 2>&1; RC=$?

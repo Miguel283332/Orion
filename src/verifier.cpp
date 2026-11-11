@@ -154,7 +154,7 @@ std::pair<bool, std::string> LeanVerificador::comprobar(const std::string& codig
 }
 
 std::optional<std::string> LeanVerificador::prohibido(const std::string& texto) {
-    static const std::regex pal(R"(\b(sorry|admit|axiom|native_decide|unsafe|implemented_by|extern|opaque|macro|macro_rules|syntax|elab|notation|infix|infixl|infixr|prefix|postfix|set_option|run_cmd|initialize|builtin_initialize)\b|#eval|#exit|#reduce)");
+    static const std::regex pal(R"(\b(sorry|admit|axiom|native_decide|unsafe|implemented_by|extern|opaque|macro|macro_rules|syntax|elab|notation|infix|infixl|infixr|prefix|postfix|set_option|run_cmd|initialize|builtin_initialize|trace|dbg_trace|dbgTrace|ofReduceBool|bv_decide|namespace|attribute)\b|\+native|#eval|#exit|#reduce)");
     static const std::regex imp(R"(^\s*import\b)");
     for (auto& l : split_lines(quitar_comentarios_lean(texto))) {
         std::smatch m;
@@ -459,14 +459,14 @@ Devuelve SOLO JSON: {"lemas": ["theorem nombre (...) : proposicion := by"]})P",
 }
 
 // =============================================================================== SymPy
-const char* PRELUDIO_PY = R"(import sympy as sp
+const char* PRELUDIO_PY = R"PY(import sympy as sp
 from sympy import *
 
 def verificar(i, cond):
-    if not bool(cond):
-        raise AssertionError("CRITERIO_FALLA %s" % i)
+    if not (cond is True or cond == sp.true):
+        raise AssertionError("CRITERIO_FALLA %s (el criterio debe ser una comparacion que valga True, p. ej. simplify(...) == 0)" % i)
     print("CRITERIO_OK %s" % i)
-)";
+)PY";
 
 SympyVerificador::SympyVerificador(const Config& cfg) : cfg_(cfg) {
     nombre = "sympy"; extension = "py"; admite_plan = false;
@@ -483,6 +483,14 @@ std::string SympyVerificador::entorno() {
     if (r.no_ejecutado) throw std::runtime_error("No se encuentra Python (python3). El backend sympy lo necesita.");
     if (r.codigo != 0) throw std::runtime_error("Falta SymPy: pip install sympy");
     return "sympy " + trim(r.salida);
+}
+
+static bool marcador_unico_final(const std::string& salida) {
+    size_t n = 0, pos = 0;
+    while ((pos = salida.find("TODO_VERIFICADO", pos)) != std::string::npos) { ++n; pos += 15; }
+    auto lineas = split_lines(salida);
+    while (!lineas.empty() && trim(lineas.back()).empty()) lineas.pop_back();
+    return n == 1 && !lineas.empty() && trim(lineas.back()) == "TODO_VERIFICADO";
 }
 
 std::pair<bool, std::string> SympyVerificador::comprobar(const std::string& codigo_, const std::string& nombre_final, bool) {
@@ -502,12 +510,12 @@ std::pair<bool, std::string> SympyVerificador::comprobar(const std::string& codi
     if (r.senal != 0)
         return {false, "El proceso fue terminado por el sistema (señal " + std::to_string(r.senal) + "): probablemente superó el límite de CPU o de memoria. Usa un cálculo más ligero (menos simplificaciones pesadas, series cortas)."};
     if (r.codigo != 0) return {false, salida.empty() ? "El script falló sin mensaje." : salida};
-    if (!nombre_final.empty() && !contains(salida, "TODO_VERIFICADO")) return {false, "El script terminó pero no llegó a comprobar todos los criterios."};
+    if (!nombre_final.empty() && !marcador_unico_final(salida)) return {false, "El script terminó pero no llegó a comprobar todos los criterios."};
     return {true, salida};
 }
 
 std::optional<std::string> SympyVerificador::prohibido(const std::string& texto) {
-    static const std::regex re(R"(\b(verificar|subprocess|socket|urllib|requests|http|ftplib|ctypes|shutil|pathlib|importlib|__import__|exec|eval|compile|globals|locals|breakpoint|input|open|os\.system|os\.popen|os\.remove|sys\.exit|exit|quit)\b)");
+    static const std::regex re(R"(\b(verificar|subprocess|socket|urllib|requests|http|ftplib|ctypes|shutil|pathlib|importlib|__import__|exec|eval|compile|globals|locals|breakpoint|input|open|os\.system|os\.popen|os\.remove|sys\.exit|exit|quit|os|sys|SystemExit|_exit|builtins|getattr|setattr|sympify|parse_expr|__\w+__)\b)");
     std::smatch m;
     std::string t = quitar_comentarios_py(texto);
     if (std::regex_search(t, m, re)) return m.str();

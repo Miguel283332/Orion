@@ -75,6 +75,18 @@ Si el plan actual no basta, el motor pide lemas nuevos **sin descartar los ya de
 
 Para análisis real o Mathlib hace falta un proyecto *lake* con Mathlib: `--lake-dir RUTA --mathlib`.
 
+## Currículo y autoaprendizaje (solo Python por ahora)
+
+```bash
+python demostrador.py curriculo --pista lean  --dir curriculo_runs --horas 3     # 18 niveles de Lean, de omega a mcd/Fibonacci
+python demostrador.py curriculo --pista sympy --dir curriculo_runs               # 12 niveles de física hasta Schwarzschild
+```
+[`curriculo/curriculo.json`](curriculo/curriculo.json) ordena los problemas por dificultad. Cada demostración **verificada** se guarda en `biblioteca_<pista>.json` y las más parecidas se muestran al modelo como ejemplos en los niveles siguientes (también con `resolver --biblioteca RUTA`). No cambia los pesos del modelo: mejora el *contexto* con lo ya demostrado. El progreso se reanuda (`progreso_<pista>.json`).
+
+La pista `abiertos` contiene conjeturas famosas (Goldbach, Collatz, primos gemelos...) **solo en su versión acotada y comprobable**; el enunciado general sigue abierto y no se afirma que el sistema pueda resolverlo. Los enunciados del currículo están revisados a mano, no compilados con Lean real.
+
+Endurecimiento tras revisión (Python y C++): el marcador `TODO_VERIFICADO` debe aparecer una sola vez y al final, los criterios deben ser booleanos estrictos, más construcciones prohibidas (`SystemExit`, `os`, `sys`, dunders, `trace`, `+native`...) y `keep_alive` en Ollama. **Sigue sin ser un sandbox real** (ver límites).
+
 ## Errores del cuaderno original que se han corregido
 
 1. **Se perdía el progreso del plan**: el estado no guardaba los lemas ni las demostraciones ya hechas, así que al reanudar se rehacía todo. Ahora se guarda el árbol completo tras cada intento.
