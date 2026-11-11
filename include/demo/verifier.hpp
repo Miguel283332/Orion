@@ -40,6 +40,7 @@ public:
     std::string codigo(const json& estado, const std::vector<std::string>& bloques, const std::string& firma = "", const std::string& cuerpo = "") override;
     std::optional<std::string> auto_(const json& estado, const std::string& firma, const std::vector<std::string>& bloques) override;
     std::string resumir_error(const std::string& salida) override;
+    std::string titulo_error(const std::string& resumen) override;
     std::optional<std::string> enunciado_trivial(const std::string& firma) override;
     std::string prompt_formalizar(const std::string& problema, const std::string& error) override;
     std::string prompt_fidelidad(const std::string& problema, const std::string& defs, const std::string& firma) override;
