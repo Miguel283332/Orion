@@ -71,6 +71,24 @@ $BIN resolver --problema "$PROB" $LEAN --dir "$W/i2" --max-intentos 2 > "$W/i2.l
 $PY resolver --problema "$PROB" $LEAN --dir "$W/i2" > "$W/i2b.log" 2>&1; RC=$?
 [ $RC -eq 0 ] && grep -q "Reanudando" "$W/i2b.log" && ok "interop: Python reanuda el estado que dejó C++" || { bad "interop C++->Python (salida $RC)"; cat "$W/i2b.log"; }
 
+# ---------------------------------------------------------------- escape incluido: especificación revisada; un estado viejo (criterios del modelo) se sustituye
+python3 - "$W" <<'PY'
+import json, sys
+W = sys.argv[1]
+json.dump([{"cuando": ["Resuelve este problema DERIVANDO"], "responde": "```python\nv_esc = solve(Eq(Rational(1, 2)*m*v**2 - G*M*m/r, 0), v)[0]\n```"}],
+          open(W + "/reglas_esc.json", "w"), ensure_ascii=False)
+PY
+start_mock "$W/reglas_esc.json"
+"$BIN" resolver --problema escape_schwarzschild --dir "$W/esc" > "$W/esc.log" 2>&1; RC=$?
+[ $RC -eq 0 ] && grep -q "Especificación incluida" "$W/esc.log" && ok "C++ escape: especificación incluida, resuelto" || { bad "C++ escape (salida $RC)"; cat "$W/esc.log"; }
+python3 - "$W/esc/estado.json" <<'PY'
+import json, sys
+e = json.load(open(sys.argv[1])); e["criterios"] = ["v_esc == 0"]; e["estado"] = "fallido"
+json.dump(e, open(sys.argv[1], "w"), ensure_ascii=False)
+PY
+"$BIN" resolver --problema escape_schwarzschild --dir "$W/esc" > "$W/esc2.log" 2>&1; RC=$?
+[ $RC -eq 0 ] && grep -q "especificación revisada" "$W/esc2.log" && ok "C++ escape: un estado con criterios del modelo se sustituye por la especificación revisada" || { bad "C++ escape reanudación (salida $RC)"; cat "$W/esc2.log"; }
+
 # ---------------------------------------------------------------- sin Ollama
 kill $MOCK 2>/dev/null; sleep 0.3
 $BIN resolver --problema "$PROB" $LEAN --dir "$W/r3" > "$W/r4.log" 2>&1; RC=$?

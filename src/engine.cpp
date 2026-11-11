@@ -47,9 +47,20 @@ void Motor::cargar(const json& problema, bool reiniciar) {
     if (reiniciar && fs::exists(ruta_estado())) copia("bak");
     if (fs::exists(ruta_estado())) {
         json datos = json::parse(leer_archivo(ruta_estado()), nullptr, false);
+        bool espec_nueva = false;
+        if (!datos.is_discarded() && datos.is_object() && problema.contains("especificacion") && problema["especificacion"].is_object()
+            && datos.value("estado", std::string()) != "verificado" && datos.value("version", 0) == ESTADO_VERSION
+            && datos.value("huella", std::string()) == huella_problema(problema)) {
+            const json& e = problema["especificacion"];
+            espec_nueva = datos.value("criterios", json::array()) != e.value("criterios", json::array())
+                       || datos.value("preambulo", std::string()) != trim(e.value("preambulo", std::string()));
+        }
         if (datos.is_discarded() || !datos.is_object()) {
             log_("Estado ilegible; se empieza de nuevo.");
             copia("corrupto");
+        } else if (espec_nueva) {
+            log_("Hay una especificación revisada para este problema y el estado guardado usa otra (escrita por el modelo): se guarda copia y se empieza con la revisada.");
+            copia("bak");
         } else if (datos.value("version", 0) == ESTADO_VERSION && datos.value("huella", std::string()) == huella_problema(problema)) {
             estado_ = datos;
             t_base_ = datos.value("tiempo", 0.0);
