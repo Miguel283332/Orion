@@ -245,6 +245,30 @@ class TestMotorLean(Base):
         self.assertIn("PISTA", segunda)
         self.assertIn("m % 2 = 0", segunda)
 
+    def test_un_estado_fallido_se_reintenta_al_volver_a_ejecutar(self):
+        """Caso real: tras 8 formalizaciones fallidas, volver a ejecutar fallaba al instante sin intentar nada."""
+        mala = formalizar("theorem t (n : Nat) : ∃ m, m > n ∧ even m := by")
+        llm1 = FakeLLM(lambda u, kw, n: mala if "Traduce el siguiente problema" in u else OK_PAR)
+        self.assertEqual(self.motor(llm1, self.cfg(formalizar=3)).ejecutar(self.problema()), 1)
+        e = self.estado()
+        self.assertEqual((e["estado"], e["intentos_formalizar"]), ("fallido", 3))
+        self.assertFalse(e["ultimo_error"].startswith("No se pudo formalizar"))     # sin prefijo anidado
+        self.assertTrue(e["error_fatal"].startswith("No se pudo formalizar"))
+        # segunda ejecución con el modelo "arreglado": debe REINTENTAR (antes fallaba sin llamar al modelo)
+        llm2 = FakeLLM(lambda u, kw, n: formalizar() if "Traduce el siguiente problema" in u else OK_PAR)
+        self.assertEqual(self.motor(llm2, self.cfg(formalizar=3)).ejecutar(self.problema()), 0)
+        self.assertGreaterEqual(len(llm2.llamadas), 2)
+        self.assertTrue(any("se reintenta" in l for l in self.logs))
+
+    def test_un_nodo_fallido_se_reabre_pero_no_repite_lo_descartado(self):
+        self.oraculo([{"enunciado_contiene": "par_mayor", "acepta_contiene": ["2 * n + 2"]}])
+        llm = FakeLLM(self.router([MAL_PAR, MAL_PAR, MAL_PAR]))
+        self.assertEqual(self.motor(llm, self.cfg(profundidad=0)).ejecutar(self.problema()), 1)
+        self.assertEqual(self.estado()["raiz"]["estado"], "fallido")
+        llm2 = FakeLLM(self.router([MAL_PAR, OK_PAR]))   # la primera repite una demostración ya descartada
+        self.assertEqual(self.motor(llm2, self.cfg(profundidad=0)).ejecutar(self.problema()), 0)
+        self.assertIn("repetida", " ".join(self.estado()["raiz"]["errores"]))
+
     def test_pausa_por_presupuesto_y_reanudacion(self):
         llm = FakeLLM(self.router([MAL_PAR, MAL_PAR, OK_PAR]))
         m1 = self.motor(llm, self.cfg(max_intentos=2))
@@ -565,6 +589,22 @@ class TestProblemasYCLI(unittest.TestCase):
             p = json.loads(f.read_text(encoding="utf-8"))
             self.assertIn("enunciado", p, f.name)
             self.assertIn(p.get("backend", "lean"), ("lean", "sympy"), f.name)
+
+    def test_notebook_de_colab_sincronizado_con_el_codigo(self):
+        """El cuaderno lleva el código incrustado (no usa git clone): debe ser idéntico a demostrador.py y a los problemas."""
+        nb = json.loads((RAIZ / "colab" / "Demostrador_Colab.ipynb").read_text(encoding="utf-8"))
+        celdas = {}
+        for c in nb["cells"]:
+            fuente = "".join(c["source"])
+            if c["cell_type"] == "code" and fuente.startswith("%%writefile "):
+                nombre, _, resto = fuente.partition("\n")
+                celdas[nombre[len("%%writefile "):]] = resto
+        self.assertEqual(celdas["demostrador.py"].rstrip("\n"), (RAIZ / "demostrador.py").read_text(encoding="utf-8").rstrip("\n"),
+                         "colab/Demostrador_Colab.ipynb está desactualizado: ejecuta  python tools/generar_notebook.py")
+        for f in sorted((RAIZ / "problemas").glob("facil_*.json")):
+            self.assertEqual(celdas["problemas/" + f.name].rstrip("\n"), f.read_text(encoding="utf-8").rstrip("\n"), f.name)
+        ast = __import__("ast")
+        ast.parse(celdas["demostrador.py"])      # el código incrustado es Python válido
 
     def test_cli_estado(self):
         with tempfile.TemporaryDirectory() as td:

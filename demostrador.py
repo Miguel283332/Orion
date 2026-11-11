@@ -754,6 +754,8 @@ class Motor:
                     self.estado = datos
                     self.t_base = float(datos.get("tiempo", 0.0))
                     self.log(f"Reanudando: {datos['estado']}, {datos['llamadas']} llamadas y {self.t_base / 60:.1f} min de trabajo previos.")
+                    if datos["estado"] == "fallido":
+                        self.reabrir_fallidos()
                     return
                 self.log("El estado guardado es de otro problema o versión: se conserva como copia y se empieza de nuevo.")
                 self.ruta_estado.rename(self.dir / f"estado.{int(time.time())}.bak.json")
@@ -761,6 +763,26 @@ class Motor:
                 self.log(f"Estado ilegible ({e}); se empieza de nuevo.")
                 self.ruta_estado.rename(self.dir / f"estado.{int(time.time())}.corrupto.json")
         self.estado = self.nuevo_estado(problema)
+        self.guardar()
+
+    def reabrir_fallidos(self) -> None:
+        """Un estado "fallido" significa que se agotaron los límites. Al volver a ejecutar se reintenta: los contadores
+        vuelven a cero, pero se conservan los lemas demostrados, el historial de errores y las demostraciones ya
+        descartadas (huellas), para no repetir lo que ya falló."""
+        e = self.estado
+        e["estado"] = "resolviendo" if e.get("formalizado") else "formalizando"
+        e["intentos_formalizar"] = 0
+        e.pop("error_fatal", None)
+
+        def abrir(n: Dict[str, Any]) -> None:
+            if n["estado"] == "fallido":
+                n.update(estado="pendiente", directos=0, finales=0, replanes=0, necesita_plan=True)
+            for h in n["hijos"]:
+                abrir(h)
+        if e.get("raiz"):
+            abrir(e["raiz"])
+        self.log("La ejecución anterior terminó sin resolverse: se reintenta con los contadores a cero "
+                 "(se conservan los lemas demostrados y las demostraciones ya descartadas).")
         self.guardar()
 
     def guardar(self) -> None:
@@ -1091,7 +1113,7 @@ class Motor:
             return 4
         except RuntimeError as e:
             self.estado["estado"] = "fallido"
-            self.estado["ultimo_error"] = str(e)
+            self.estado["error_fatal"] = str(e)      # ultimo_error conserva el error bruto del verificador
             self.guardar()
             self.say(None, f"ERROR: {e}")
             return 1
@@ -1119,7 +1141,9 @@ def informe(directorio: Path) -> str:
            f"llamadas {e['llamadas']} | tiempo {t / 3600:.2f} h"]
     if e.get("raiz"):
         out += ["", *arbol(e["raiz"])]
-    if e.get("ultimo_error"):
+    if e.get("error_fatal"):
+        out += ["", "Error: " + recortar(e["error_fatal"], 300)]
+    elif e.get("ultimo_error"):
         out += ["", "Último error: " + recortar(e["ultimo_error"], 300)]
     if e["estado"] == "verificado":
         out += ["", "Resultado: " + e["resultado"]["archivo"]]

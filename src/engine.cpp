@@ -51,6 +51,7 @@ void Motor::cargar(const json& problema, bool reiniciar) {
             char b[64];
             std::snprintf(b, sizeof(b), "%.1f", t_base_ / 60);
             log_("Reanudando: " + datos.value("estado", std::string()) + ", " + std::to_string(datos.value("llamadas", 0)) + " llamadas y " + b + " min de trabajo previos.");
+            if (estado_["estado"] == "fallido") reabrir_fallidos();
             return;
         } else {
             log_("El estado guardado es de otro problema o versión: se conserva como copia y se empieza de nuevo.");
@@ -58,6 +59,21 @@ void Motor::cargar(const json& problema, bool reiniciar) {
         }
     }
     estado_ = nuevo_estado(problema);
+    guardar();
+}
+
+// Un estado "fallido" significa que se agotaron los límites. Al volver a ejecutar se reintenta: los contadores vuelven a
+// cero, pero se conservan los lemas demostrados, el historial de errores y las demostraciones ya descartadas (huellas).
+void Motor::reabrir_fallidos() {
+    estado_["estado"] = estado_.value("formalizado", false) ? "resolviendo" : "formalizando";
+    estado_["intentos_formalizar"] = 0;
+    estado_.erase("error_fatal");
+    std::function<void(json&)> abrir = [&](json& n) {
+        if (n["estado"] == "fallido") { n["estado"] = "pendiente"; n["directos"] = 0; n["finales"] = 0; n["replanes"] = 0; n["necesita_plan"] = true; }
+        for (auto& h : n["hijos"]) abrir(h);
+    };
+    if (estado_.contains("raiz") && estado_["raiz"].is_object()) abrir(estado_["raiz"]);
+    log_("La ejecución anterior terminó sin resolverse: se reintenta con los contadores a cero (se conservan los lemas demostrados y las demostraciones ya descartadas).");
     guardar();
 }
 
@@ -427,7 +443,7 @@ int Motor::ejecutar(const json& problema, bool reiniciar) {
         return 4;
     } catch (const std::exception& e) {
         estado_["estado"] = "fallido";
-        estado_["ultimo_error"] = e.what();
+        estado_["error_fatal"] = e.what();   // ultimo_error conserva el error bruto del verificador
         guardar();
         say(nullptr, std::string("ERROR: ") + e.what());
         return 1;
@@ -454,7 +470,8 @@ std::string informe(const fs::path& directorio) {
     std::vector<std::string> out = {"Problema: " + recortar(trim(e["problema"]["enunciado"].get<std::string>()), 150),
                                     "Estado: " + e["estado"].get<std::string>() + " | backend " + e["problema"].value("backend", std::string()) + " | llamadas " + std::to_string(e.value("llamadas", 0)) + " | tiempo " + b + " h"};
     if (e.contains("raiz") && e["raiz"].is_object()) { out.push_back(""); for (auto& l : arbol(e["raiz"])) out.push_back(l); }
-    if (!e.value("ultimo_error", std::string()).empty()) { out.push_back(""); out.push_back("Último error: " + recortar(e["ultimo_error"].get<std::string>(), 300)); }
+    if (!e.value("error_fatal", std::string()).empty()) { out.push_back(""); out.push_back("Error: " + recortar(e["error_fatal"].get<std::string>(), 300)); }
+    else if (!e.value("ultimo_error", std::string()).empty()) { out.push_back(""); out.push_back("Último error: " + recortar(e["ultimo_error"].get<std::string>(), 300)); }
     if (e["estado"] == "verificado") { out.push_back(""); out.push_back("Resultado: " + e["resultado"]["archivo"].get<std::string>()); }
     return join(out, "\n");
 }
