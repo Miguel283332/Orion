@@ -8,7 +8,7 @@ namespace demo {
 struct Config {
     std::string modelo = "qwen2.5:7b";
     std::string ollama_url = "http://127.0.0.1:11434";
-    int num_ctx = 8192, num_predict = 1600;
+    int num_ctx = 8192, num_predict = 1000;
     std::string backend = "lean";
     std::string lean, lake_dir;      // ruta a lean; proyecto lake con Mathlib (usa `lake env lean`)
     bool mathlib = false;

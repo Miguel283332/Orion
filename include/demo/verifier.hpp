@@ -52,6 +52,8 @@ public:
     std::string renombrar(const std::string& firma, const std::string& nuevo);
     std::string clave(const std::string& firma);
     std::vector<std::string> tacticas_auto() const;
+    std::string estrategia(const std::string& firma);
+    std::vector<std::string> testigos_auto(const std::string& firma);
     const std::string& encabezado() const { return encabezado_; }
 
 private:

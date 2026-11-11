@@ -120,8 +120,30 @@ class TestUtilidades(unittest.TestCase):
         self.assertIn("PISTA", v.resumir_error("/t/Problema.lean:3:56: error: Function expected at\n  even"))
         self.assertIn("sintaxis", v.resumir_error("/t/Problema.lean:4:2: error: unexpected token ')'"))
         self.assertNotIn("PISTA", v.resumir_error("/t/Problema.lean:3:2: error: unsolved goals\n⊢ n = n"))
-        self.assertIn("Even", d.LeanVerificador(d.Config(mathlib=True)).resumir_error(err))
+        self.assertIn("exact?", d.LeanVerificador(d.Config(mathlib=True)).resumir_error(err))      # con Mathlib la pista es otra
         self.assertIn("m % 2 = 0", v.prompt_formalizar("x", ""))
+
+    def test_mensajes_reales_de_lean_4_35(self):
+        """Salida real pegada desde Colab: 'Unknown constant' con mayúscula y error(lean.unknownIdentifier)."""
+        v = d.LeanVerificador(d.Config())
+        real = ("/tmp/x/Problema.lean:5:27: error(lean.unknownIdentifier): Unknown constant `Nat.exists_even`\n"
+                "/tmp/x/Problema.lean:5:9: error: Tactic `rcases` failed")
+        r = v.resumir_error(real)
+        self.assertIn("línea 5:27: error(lean.unknownIdentifier): Unknown constant `Nat.exists_even`", r)
+        self.assertIn("PISTA", r)
+        self.assertIn("No inventes", r)
+        self.assertIn("Unknown constant `Nat.exists_even`", v.titulo_error(r))
+
+    def test_estrategia_y_testigos_para_existenciales(self):
+        v = d.LeanVerificador(d.Config())
+        self.assertIn("EXISTENCIAL", v.estrategia(FIRMA))
+        self.assertIn("omega", v.estrategia(FIRMA))
+        self.assertEqual(v.estrategia("theorem t (n : Nat) : n + 0 = n := by"), "")
+        alts = v.testigos_auto(FIRMA)
+        self.assertIn("exact ⟨2 * n + 2, by omega⟩", alts)
+        self.assertEqual(len(alts), len(set(alts)))
+        self.assertEqual(v.testigos_auto("theorem t (n : Nat) : n = n := by"), [])
+        self.assertEqual(v.testigos_auto("theorem t : ∃ m : Nat, m > 3 := by")[0], "exact ⟨0, by omega⟩")   # sin variables: constantes
 
     def test_trivial(self):
         v = d.LeanVerificador(d.Config())
@@ -268,6 +290,20 @@ class TestMotorLean(Base):
         llm2 = FakeLLM(self.router([MAL_PAR, OK_PAR]))   # la primera repite una demostración ya descartada
         self.assertEqual(self.motor(llm2, self.cfg(profundidad=0)).ejecutar(self.problema()), 0)
         self.assertIn("repetida", " ".join(self.estado()["raiz"]["errores"]))
+
+    def test_repetir_sube_la_temperatura_y_se_ensenan_los_fallos(self):
+        simp = "```lean\n" + FIRMA + "\n  simp\n```"
+        decide = "```lean\n" + FIRMA + "\n  decide\n```"
+        llm = FakeLLM(self.router([MAL_PAR, MAL_PAR, simp, decide, OK_PAR]))
+        self.assertEqual(self.motor(llm, self.cfg(directos=6)).ejecutar(self.problema()), 0)
+        # llamadas: 0 formalizar, 1 omega, 2 omega (repetida), 3 simp, 4 decide, 5 ok
+        base3 = d.TEMPERATURAS[2]
+        self.assertAlmostEqual(llm.llamadas[3]["temperatura"], base3 + 0.15)      # tras una repetición, más variedad
+        self.assertIn("ESTRATEGIA SUGERIDA", llm.llamadas[1]["u"])
+        quinto = llm.llamadas[5]["u"]
+        self.assertIn("YA FALLARON", quinto)
+        self.assertIn("omega", quinto)
+        self.assertIn("simp", quinto)
 
     def test_pausa_por_presupuesto_y_reanudacion(self):
         llm = FakeLLM(self.router([MAL_PAR, MAL_PAR, OK_PAR]))

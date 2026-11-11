@@ -214,7 +214,7 @@ json Motor::nodo(const std::string& firma, int prof) {
     estado_["contador"] = c;
     return {{"id", "n" + std::to_string(c)}, {"firma", firma}, {"prof", prof}, {"estado", "pendiente"}, {"cuerpo", ""}, {"auto", false}, {"directos", 0},
             {"finales", 0}, {"replanes", 0}, {"necesita_plan", true}, {"hijos", json::array()}, {"fallidos", json::array()}, {"errores", json::array()},
-            {"ultimo_codigo", ""}, {"ultimo_error", ""}, {"huellas", json::array()}};
+            {"ultimo_codigo", ""}, {"ultimo_error", ""}, {"huellas", json::array()}, {"cuerpos", json::array()}, {"repetidas", 0}};
 }
 
 std::string Motor::bloque_nodo(const json& n) {
@@ -230,6 +230,10 @@ bool Motor::fallo(json& n, const std::string& cuerpo, const std::string& salida,
     n["ultimo_error"] = resumen;
     n["errores"].push_back(resumen);
     while (n["errores"].size() > 6) n["errores"].erase(n["errores"].begin());
+    if (!cuerpo.empty() && !contains(resumen, "repetida")) {
+        n["cuerpos"].push_back(recortar(cuerpo, 500));
+        while (n["cuerpos"].size() > 4) n["cuerpos"].erase(n["cuerpos"].begin());
+    }
     guardar();
     evento("intento_fallido", {{"nodo", n["id"]}, {"tipo", tipo}, {"error", recortar(resumen, 400)}});
     say(&n, tipo + " " + std::to_string(tipo == "directo" ? n["directos"].get<int>() : n["finales"].get<int>()) + ": FALLA — " + recortar(ver_.titulo_error(resumen), 130));
@@ -251,7 +255,7 @@ bool Motor::intento(json& n, const std::vector<std::string>& ctx, const std::str
     const char* clave = tipo == "directo" ? "directos" : "finales";
     n[clave] = n[clave].get<int>() + 1;
     int idx = n["directos"].get<int>() + n["finales"].get<int>() + 6 * n["replanes"].get<int>();
-    double temp = TEMPERATURAS[std::min(idx - 1, 5)];
+    double temp = std::min(1.0, TEMPERATURAS[std::min(idx - 1, 5)] + 0.15 * n.value("repetidas", 0));   // si repite, más variedad
     long long idn = std::stoll(n["id"].get<std::string>().substr(1));
     int seed = (int)(cfg_.semilla * 1000003LL + idn * 1009 + n["directos"].get<int>() * 31 + n["finales"].get<int>() * 17 + n["replanes"].get<int>() * 5);
     std::string resp = llm_(ver_.prompt_prueba(n["firma"], ctx, estado_, n, tipo), temp, seed);
@@ -259,7 +263,7 @@ bool Motor::intento(json& n, const std::vector<std::string>& ctx, const std::str
     if (cuerpo.empty()) return fallo(n, "", "No se pudo extraer una demostración de la respuesta.", tipo);
     if (auto malo = ver_.prohibido(cuerpo)) return fallo(n, cuerpo, "Construcción prohibida: " + *malo, tipo);
     std::string h = huella(cuerpo);
-    for (auto& x : n["huellas"]) if (x == h) return fallo(n, cuerpo, "Demostración repetida: ya se probó y falló.", tipo);
+    for (auto& x : n["huellas"]) if (x == h) { n["repetidas"] = n.value("repetidas", 0) + 1; return fallo(n, cuerpo, "Demostración repetida: ya se probó y falló.", tipo); }
     n["huellas"].push_back(h);
     while (n["huellas"].size() > 200) n["huellas"].erase(n["huellas"].begin());
     auto [ok, salida] = ver_.comprobar(ver_.codigo(estado_, ctx, n["firma"], cuerpo), ver_.nombre == "sympy" ? "x" : "");

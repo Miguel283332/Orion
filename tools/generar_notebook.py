@@ -102,6 +102,7 @@ print()
 - Dale **horas**: `--horas 3` (límite de la sesión; al llegar se pausa con el progreso guardado).
 - Más intentos y descomposición más profunda: `--directos 10 --replanes 5 --profundidad 3`.
 - Un modelo mayor ayuda mucho: `MODELO = 'qwen2.5:14b'` (si la GPU lo aguanta).
+- **Sin GPU (solo CPU)** cada llamada de un 7B tarda minutos. Para acelerar: `--num-predict 600 --num-ctx 4096` (respuestas más cortas) y/o un modelo más pequeño (`qwen2.5:3b`). Lo ideal es esperar a que se renueve la cuota de GPU: el progreso queda guardado en Drive y se reanuda.
 - En segundo plano, consultando el registro:
 """),
         code("!nohup python demostrador.py resolver --problema problemas/facil_par_mayor.json --modelo {MODELO} --lean {LEAN} --dir {DIR}/par_mayor --horas 3 > {DIR}/par_mayor.log 2>&1 &"),

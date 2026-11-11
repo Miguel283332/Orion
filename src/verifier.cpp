@@ -58,9 +58,12 @@ TÁCTICAS ÚTILES:
 - SIN Mathlib no existen Even, Odd, Nat.Prime, Finset, Real: «par» es `m % 2 = 0`, «impar» `m % 2 = 1`.)G";
 
 static const char* PISTA_SIN_MATHLIB =
-    "PISTA: ese identificador no existe en Lean 4 sin Mathlib. Usa solo Nat/Int y operaciones básicas: «m es par» se escribe `m % 2 = 0` "
-    "(o `∃ k, m = 2 * k`) y «m es impar» `m % 2 = 1`. NO existen Even, Odd, Nat.Prime, Finset, Real ni la notación ℕ (usa Nat).";
-static const char* PISTA_MATHLIB = "PISTA: revisa el nombre del identificador (p. ej. Even, Odd, Nat.Prime) o exprésalo con operaciones básicas (`m % 2 = 0`).";
+    "PISTA: ese identificador o lema NO existe (sin Mathlib hay muy pocos). No inventes nombres de lemas: usa tácticas básicas (omega, simp, constructor, "
+    "`exact ⟨testigo, by omega⟩`). «m es par» se escribe `m % 2 = 0` (o `∃ k, m = 2 * k`) y «m es impar» `m % 2 = 1`. "
+    "NO existen Even, Odd, Nat.Prime, Finset, Real ni la notación ℕ (usa Nat).";
+static const char* PISTA_MATHLIB =
+    "PISTA: ese identificador o lema NO existe con ese nombre. No lo inventes: revisa el nombre, prueba `exact?`, o exprésalo con operaciones básicas "
+    "(`m % 2 = 0`) y tácticas como omega/simp.";
 static const char* PISTA_SINTAXIS = "PISTA: error de sintaxis; revisa paréntesis, ⟨ ⟩, la sangría (todas las tácticas con la misma) y que cada táctica esté en su línea.";
 
 LeanVerificador::LeanVerificador(const Config& cfg) : cfg_(cfg), mathlib_(cfg.mathlib || !cfg.lake_dir.empty()) {
@@ -253,6 +256,41 @@ std::optional<std::string> LeanVerificador::enunciado_trivial(const std::string&
 
 std::string LeanVerificador::bloque(const std::string& firma, const std::string& cuerpo) { return firma + "\n" + cuerpo; }
 
+// Consejos según la FORMA del objetivo (un modelo pequeño los necesita).
+std::string LeanVerificador::estrategia(const std::string& firma) {
+    std::string t = firma.substr(0, firma.find(":="));
+    std::vector<std::string> h;
+    if (contains(t, "∃")) h.push_back("El objetivo es un EXISTENCIAL: elige un testigo CONCRETO en función de las variables (p. ej. `2 * n + 2`) y escribe `exact ⟨testigo, by omega⟩`. NO busques lemas de la biblioteca ni uses `obtain` sobre lemas que no conozcas.");
+    if (contains(t, "↔")) h.push_back("Es un si-y-solo-si: `constructor`, y en cada lado `intro h` y después `omega` (o `simp_all`).");
+    if (contains(t, "→") || contains(t, "->")) h.push_back("Hay una implicación: empieza con `intro h` y usa `h` (con `omega` o `exact`).");
+    if (contains(t, "%") || contains(t, "/")) h.push_back("`omega` entiende `%` y `/` por constantes: úsalo para cerrar las igualdades y desigualdades.");
+    return lineas_con_prefijo(h, "- ");
+}
+
+// Alternativas `exact ⟨W, by omega⟩` para objetivos existenciales: prueba testigos lineales típicos sin gastar el modelo.
+std::vector<std::string> LeanVerificador::testigos_auto(const std::string& firma) {
+    std::string t = firma.substr(0, firma.find(":="));
+    if (!contains(t, "∃")) return {};
+    static const std::regex binder(R"(\(([^():]+?)\s*:\s*(?:Nat|Int)\))");
+    std::vector<std::string> vars;
+    for (auto it = std::sregex_iterator(t.begin(), t.end(), binder); it != std::sregex_iterator(); ++it) {
+        std::string cur;
+        for (char ch : (*it)[1].str() + " ") {
+            if (std::isspace((unsigned char)ch)) { if (!cur.empty()) { vars.push_back(cur); cur.clear(); } } else cur.push_back(ch);
+        }
+    }
+    std::vector<std::string> cands;
+    for (size_t i = 0; i < vars.size() && i < 2; ++i) {
+        const std::string& v = vars[i];
+        for (auto& w : std::vector<std::string>{v, v + " + 1", v + " + 2", "2 * " + v, "2 * " + v + " + 1", "2 * " + v + " + 2", "3 * " + v, v + " * " + v, v + " * " + v + " + 1"}) cands.push_back(w);
+    }
+    for (auto& w : std::vector<std::string>{"0", "1", "2"}) cands.push_back(w);
+    std::set<std::string> vistos;
+    std::vector<std::string> alts;
+    for (auto& w : cands) if (vistos.insert(w).second) alts.push_back("exact ⟨" + w + ", by omega⟩");
+    return alts;
+}
+
 std::string LeanVerificador::codigo(const json& estado, const std::vector<std::string>& bloques, const std::string& firma, const std::string& cuerpo) {
     std::vector<std::string> partes = {encabezado_, estado.value("definiciones", std::string())};
     partes.insert(partes.end(), bloques.begin(), bloques.end());
@@ -261,8 +299,13 @@ std::string LeanVerificador::codigo(const json& estado, const std::vector<std::s
 }
 
 std::optional<std::string> LeanVerificador::auto_(const json& estado, const std::string& firma, const std::vector<std::string>& bloques) {
+    std::vector<std::string> alts = tacticas_auto();
+    std::string ultima = alts.back();   // `exact?` (lenta) siempre la última
+    alts.pop_back();
+    for (auto& w : testigos_auto(firma)) alts.push_back(w);
+    alts.push_back(ultima);
     std::string cuerpo = "  first";
-    for (auto& a : tacticas_auto()) cuerpo += "\n  | " + a;
+    for (auto& a : alts) cuerpo += "\n  | " + a;
     auto [ok, s] = comprobar(codigo(estado, bloques, firma, cuerpo));
     (void)s;
     return ok ? std::optional<std::string>(cuerpo) : std::nullopt;
@@ -285,7 +328,7 @@ std::string LeanVerificador::resumir_error(const std::string& salida) {
     std::string base = errores.empty() ? salida : join(errores, "\n");
     static const std::regex ruta(R"(\S*Problema\.lean:)");
     base = recortar(std::regex_replace(base, ruta, "línea "), 1400);
-    static const std::regex desconocido(R"(unknown (identifier|constant|namespace)|Function expected)");
+    static const std::regex desconocido(R"(unknown (identifier|constant|namespace)|unknownidentifier|unknownconstant|function expected)", std::regex::icase);
     static const std::regex sintaxis(R"(unexpected token|expected term|expected ')");
     if (std::regex_search(salida, desconocido)) base += std::string("\n") + (mathlib_ ? PISTA_MATHLIB : PISTA_SIN_MATHLIB);
     else if (std::regex_search(salida, sintaxis)) base += std::string("\n") + PISTA_SINTAXIS;
@@ -354,6 +397,14 @@ std::string LeanVerificador::prompt_prueba(const std::string& firma, const std::
         for (size_t i = n >= 4 ? n - 4 : 0; i + 1 < n; ++i) e.push_back(nodo["errores"][i].get<std::string>());
         otros = "\nERRORES DE INTENTOS ANTERIORES (para no repetirlos):\n" + join(e, "\n---\n");
     }
+    if (nodo.contains("cuerpos") && nodo["cuerpos"].size() > 1) {
+        size_t n = nodo["cuerpos"].size();   // todas salvo la última (ya va en "TU INTENTO ANTERIOR"), como mucho 2
+        std::vector<std::string> antes;
+        for (size_t i = n >= 3 ? n - 3 : 0; i + 1 < n; ++i) antes.push_back("```lean\n" + nodo["cuerpos"][i].get<std::string>() + "\n```");
+        otros += "\nDEMOSTRACIONES QUE YA FALLARON (NO las repitas ni las variantes triviales):\n" + join(antes, "\n---\n");
+    }
+    std::string est = estrategia(firma);
+    if (!est.empty()) otros += "\n\nESTRATEGIA SUGERIDA PARA ESTE OBJETIVO:\n" + est;
     std::string defs = estado.value("definiciones", std::string());
     return rellenar(R"P(Demuestra este teorema en Lean 4.
 

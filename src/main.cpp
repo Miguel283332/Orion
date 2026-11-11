@@ -38,7 +38,7 @@ struct Args {
     std::string cmd, problema, enunciado, backend, dir, modelo = "qwen2.5:7b", ollama_url, lean, lake_dir;
     bool mathlib = false, sin_fidelidad = false, reiniciar = false;
     double horas = 0;
-    int max_intentos = 0, directos = 6, finales = 6, replanes = 3, profundidad = 2, num_ctx = 8192, num_predict = 1600, timeout_lean = 90, semilla = 1;
+    int max_intentos = 0, directos = 6, finales = 6, replanes = 3, profundidad = 2, num_ctx = 8192, num_predict = 1000, timeout_lean = 90, semilla = 1;
 };
 
 static Args parsear(int argc, char** argv) {
