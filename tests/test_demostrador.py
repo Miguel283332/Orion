@@ -590,6 +590,7 @@ class TestSympy(Base):
         llm = FakeLLM(self.router([self.MAL, self.BIEN]))
         self.assertEqual(self.motor_sympy(llm).ejecutar(self.problema("Escape.", "sympy")), 0)
         self.assertIn("CRITERIO_FALLA", llm.llamadas[2]["u"])     # el fallo concreto se le devuelve al modelo
+        self.assertIn("VALOR v_esc = c", llm.llamadas[2]["u"])    # y el valor que calculó, para que pueda corregirlo
         res = (self.dir / "resultado.py").read_text(encoding="utf-8")
         self.assertIn("solve(Eq(E, 0), v)", res)
         self.assertIn("verificar(2,", res)                          # los criterios los pone el motor, no el modelo
