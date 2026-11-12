@@ -3,6 +3,8 @@
 #pragma once
 #include <atomic>
 #include <functional>
+#include <mutex>
+#include <vector>
 #include <string>
 
 #include "orion/http.hpp"
@@ -45,8 +47,12 @@ struct InfoModelo {
 class Ollama {
 public:
     Ollama(const std::string& url, std::string modelo);
-    const std::string& modelo() const { return modelo_; }
-    void cambiar_modelo(const std::string& m) { modelo_ = m; }
+    std::string modelo() const;
+    std::string url() const;
+    void cambiar_modelo(const std::string& m);
+    void cambiar_url(const std::string& url);
+    // Vectores de significado (embeddings) con el MISMO modelo. Devuelve false (y error) si el modelo no los da.
+    bool embed(const std::vector<std::string>& textos, std::vector<std::vector<float>>& vectores, std::string* error = nullptr) const;
     bool disponible(std::string* version = nullptr) const;
     // mensajes: [{"role":"system|user|assistant","content":"..."}]. por_trozo recibe el texto según llega.
     // herramientas: lista en el formato de Ollama (o nullptr). Si el modelo pide usarlas, vienen en ResultadoGeneracion::llamadas.
@@ -54,7 +60,10 @@ public:
                              const std::atomic<bool>* cancelar, const json* herramientas = nullptr) const;
     InfoModelo info() const;
 private:
+    ClienteHttp cliente() const;
+    mutable std::mutex mu_;
     ClienteHttp http_;
+    std::string url_;
     std::string modelo_;
 };
 

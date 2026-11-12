@@ -76,9 +76,11 @@ cmake --build build --config Release
    Orion · 0 recuerdos, 0 turnos de conversación, 0 entradas de diario · datos en C:\Orion\datos
    Modelo qwen2.5:3b (3.09 mil millones de parámetros, Q4_K_M) · Ollama ...
    Permisos: total (comandos, archivos, internet, su código y su memoria; todo queda en datos/acciones.jsonl)
+   Interfaz web: http://127.0.0.1:7860/?t=...   (/web abrir)
    Escribe para hablar conmigo. /ayuda para ver los comandos.
    ```
 4. Escribe y pulsa Enter. `/salir` para apagarla; `Ctrl+C` también funciona (todo está guardado al momento).
+5. **Interfaz web** (opcional): escribe `/web abrir`, o copia la dirección que muestra al arrancar. Tiene chat, actividad en directo, estado, metas, mejoras y acciones. Solo funciona desde tu ordenador.
 
 > La primera respuesta tarda más: Ollama carga el modelo en memoria (10-30 s). Después, en un i5 sin GPU, cuenta con unos 6-10 tokens/s.
 
@@ -123,8 +125,13 @@ Si un cambio suyo no te gusta, descártalo con `git checkout -- <archivo>` y rec
 | Va muy lento | Normal en CPU. `/ritmo bajo` para que piense menos a solas; con la RTX, `/modelo usar qwen2.5:7b` |
 | Se reinicia una y otra vez | El guardián se detiene tras 3 caídas en 2 minutos; mira `datos\guardian.log` |
 | `No pude buscar (¿hay conexión?…)` | Comprueba la conexión y `curl --version` |
+| `No pude abrir la interfaz web en el puerto 7860` | Otro programa usa ese puerto: cambia `"web_puerto"` en `datos\config.json` |
+| La automejora dice que no encuentra su repositorio | Arranca el guardián desde la carpeta del repositorio |
+| `/memoria` dice "mi modelo no da vectores" | Busca por palabras; es normal con algunos modelos. Prueba más tarde o con otro modelo |
 
 ## 8. Cuando tengas el PC con RTX
+
+Dos opciones: usarlo **desde el portátil** como dispositivo (más fácil; ver [ESCALAR.md](ESCALAR.md)) o **mudar Orion** al PC:
 
 1. Instala lo mismo (sección 1) y los drivers de NVIDIA; Ollama usa la GPU solo.
 2. Copia la carpeta `datos\` del portátil al PC: es su memoria (recuerdos, diario, `yo.md`, metas).

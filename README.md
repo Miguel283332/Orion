@@ -1,60 +1,67 @@
 # Orion
 
-Orion es una IA autónoma que **vive en tu ordenador**. Está siempre en marcha:
-- **habla contigo por la terminal**;
-- **usa el ordenador con acceso total**: comandos, archivos e internet;
-- **recuerda** lo que hablasteis, también tras reiniciarse;
-- **se propone aprender** lo que no sabe ("voy a aprender") y trabaja en ello **a solas**;
-- **reflexiona**, escribe un **diario** y mantiene un documento sobre **cómo se ve a sí misma**;
-- puede **modificar y recompilar su propio código**. Un guardián aplica la versión nueva y vuelve a la anterior si falla.
+Orion es una IA autónoma que **vive en tu ordenador**. Está siempre en marcha y piensa también cuando no le hablas. Usa **un único modelo de lenguaje local** a través de [Ollama](https://ollama.com) (en el portátil, `qwen2.5:3b`) y está escrita en **C++20**, sin dependencias que descargar.
 
-Usa **un único modelo de lenguaje local** a través de [Ollama](https://ollama.com) (en el portátil, `qwen2.5:3b`) y está escrita en **C++20**.
+Lo que hace:
+- **Habla contigo** por la terminal y por una **interfaz web local** con paneles.
+- **Usa el ordenador con acceso total**: comandos, archivos e internet.
+- **Recuerda por significado**, no solo por palabras, y resume las conversaciones antiguas para no olvidarlas.
+- **Aprende**:
+  - se pone metas ("voy a aprender") y las trabaja a solas, paso a paso;
+  - guarda como **habilidades** los scripts que le funcionan;
+  - **practica con un juez real**: predice lo que hace un script y lo comprueba ejecutándolo.
+- **Se mejora a sí misma con medida**: propone cambios en sus instrucciones, los mide con un banco de pruebas y un examen de referencia, y solo se queda con los que la mejoran. También puede modificar y recompilar su código C++; el guardián vuelve a la versión anterior si algo falla.
+- **Escala**: si registras otro ordenador tuyo con Ollama (la RTX), se pasa sola a él cuando es más rápido y vuelve cuando se apaga. Te avisa cuando el hardware la limita.
 
-> **Para empezar:** [docs/WINDOWS.md](docs/WINDOWS.md) explica paso a paso cómo instalar, hacer `git pull`, compilar en VS Code y arrancarla.
+> **Para empezar:** [docs/WINDOWS.md](docs/WINDOWS.md) explica paso a paso cómo hacer `git pull`, compilar en VS Code y arrancarla.
 
-## Qué hay en esta versión (0.2)
+## Versión 0.3: qué hay
 
 | Capacidad | Estado |
 |---|---|
-| Chat en la terminal; tu mensaje interrumpe lo que esté pensando a solas; `/para` corta una respuesta | ✅ |
-| Memoria persistente: conversación, recuerdos (búsqueda BM25), diario, `yo.md` con versiones, estadísticas | ✅ |
-| Pensamiento a solas: reflexionar y extraer recuerdos, escribir el diario, revisar `yo.md` con su hardware medido | ✅ |
-| **Acceso total con herramientas**: comandos (cmd/PowerShell), leer y escribir archivos, buscar y leer en internet | ✅ (nuevo) |
-| **"Mi cuerpo"**: sabe dónde están su código, su memoria y sus pesos (archivo GGUF, parámetros, tamaño) y qué hardware tiene | ✅ (nuevo) |
-| **Metas "voy a aprender"**: las crea ella o tú (`/aprende`), trabaja en ellas a solas con herramientas y te avisa al terminar | ✅ (nuevo) |
-| **Automejora del código**: edita su código, se compila en `build-auto\`, se reinicia; el guardián aplica la versión o vuelve atrás | ✅ (nuevo) |
-| Estadísticas: `/modelo` (parámetros, cuantización, RAM/VRAM, CPU o GPU, tokens/s), `/hardware`, `/memoria`, `/estado`, `/acciones` | ✅ |
-| Búsqueda de recuerdos por significado (embeddings) | fase 2 |
-| Banco de pruebas propio para medir si un cambio la mejora; examen de referencia externo | fase 4 |
-| Cambiar sus pesos (entrenamiento LoRA, con GPU) | fase 5 |
+| Chat en terminal y web; tu mensaje interrumpe lo que piensa a solas; `/para` | ✅ |
+| Memoria persistente: conversación, recuerdos, diario, `yo.md` con versiones | ✅ |
+| **Memoria por significado** (vectores del mismo modelo) + palabras, y **resúmenes** de conversaciones antiguas | ✅ nuevo |
+| Acceso total: comandos, archivos, internet, su código, su memoria; "Mi cuerpo" (código, memoria, pesos, hardware) | ✅ |
+| **Metas por pasos**: planifica, hace un paso cada vez, se puede interrumpir y retomar, avisa con `★` | ✅ mejorado |
+| **Habilidades**: scripts verificados que guarda y reutiliza (`/habilidades`) | ✅ nuevo |
+| **Práctica con juez real**: ajusta la dificultad para acertar ~la mitad; los ejemplos verificados quedan para entrenar en la fase 5 | ✅ nuevo |
+| **Automejora medida**: banco de pruebas + examen de referencia (con huella), acepta solo lo que mejora, commit en git, `/mejoras`, `/volver` | ✅ nuevo |
+| Automejora del código C++: compilarse y reiniciarse; el guardián aplica la versión o vuelve atrás | ✅ |
+| **Interfaz web local** (`/web`): chat, actividad en directo, estado, metas, mejoras, acciones y recuerdos. La puede modificar ella | ✅ nuevo |
+| **Escalado**: dispositivos registrados, cambio automático al más rápido, vuelta al local si cae, avisos de límites | ✅ nuevo |
+| Cambiar sus pesos (entrenamiento LoRA con GPU) | fase 5, pendiente |
 
 ## Uso
 
 ```
 build\Release\guardian.exe
 ```
-Escribe y pulsa Enter para hablar. Mientras piensa o usa herramientas verás notas tenues:
-```
-busca qué es la gravedad cuántica de bucles y guárdalo en un archivo
-  · ⚙ buscar_en_internet: gravedad cuántica de bucles
-  ·   → 1. Gravedad cuántica de bucles - Wikipedia — Teoría que cuantiza el espacio-tiempo…  (+11 líneas)
-  · ⚙ escribir_archivo: C:\Orion\notas\lqg.txt
-  ·   → Escrito C:\Orion\notas\lqg.txt (812 bytes).
-Orion> He buscado y lo he resumido en C:\Orion\notas\lqg.txt: ...
-  · 143 tokens · 7.2 tokens/s
-```
+Escribe y pulsa Enter, o abre la interfaz web con `/web abrir`. Ejemplos:
+- "mira qué hay en mi carpeta de Descargas"
+- "busca qué es la gravedad cuántica de bucles y guárdame un resumen en un archivo"
+- `/aprende cómo funciona git por dentro`
+- `/mejorate` (se mide, propone un cambio, lo mide y decide)
 
-Comandos (todos en [docs/COMANDOS.md](docs/COMANDOS.md)): `/estado` · `/modelo` · `/hardware` · `/memoria` · `/recuerdos` · `/buscar` · `/diario` · `/yo` · `/metas` · `/aprende <tema>` · `/acciones` · `/permisos` · `/reflexiona` · `/pausa` · `/sigue` · `/ritmo` · `/para` · `/versiones` · `/config` · `/reinicia` · `/salir`.
+Comandos ([lista completa](docs/COMANDOS.md)):
+- **Estado y medidas:** `/estado` · `/modelo` · `/hardware` · `/limites` · `/config`
+- **Memoria:** `/memoria` · `/recuerdos` · `/buscar` · `/diario` · `/yo`
+- **Aprendizaje:** `/metas` · `/aprende` · `/habilidades` · `/practica`
+- **Automejora:** `/mejoras` · `/mejorate` · `/volver`
+- **Dispositivos y web:** `/dispositivos` · `/web`
+- **Control:** `/acciones` · `/permisos` · `/reflexiona` · `/pausa` · `/sigue` · `/ritmo` · `/para` · `/versiones` · `/reinicia` · `/salir`
 
 ## Documentación
 
 | Documento | Contenido |
 |---|---|
 | [WINDOWS.md](docs/WINDOWS.md) | instalación, `git pull`, compilación en VS Code, arranque, actualización y problemas frecuentes |
-| [ACCESO_TOTAL.md](docs/ACCESO_TOTAL.md) | qué puede hacer en tu ordenador, cómo ver todo lo que hace y cómo cambiar los permisos |
-| [COMANDOS.md](docs/COMANDOS.md) | todos los comandos, las opciones de arranque y `datos/config.json` |
-| [ARQUITECTURA.md](docs/ARQUITECTURA.md) | bucle de vida, hilos, herramientas, metas, memoria, guardián y código |
-| [AUTOMEJORA.md](docs/AUTOMEJORA.md) | cómo se modifica a sí misma, qué falta y el riesgo de engañarse |
+| [ACCESO_TOTAL.md](docs/ACCESO_TOTAL.md) | qué puede hacer en tu ordenador, qué hace a solas, cómo ver todo y cómo cambiar los permisos |
+| [APRENDER.md](docs/APRENDER.md) | memoria por significado, metas por pasos, habilidades y práctica con juez real |
+| [AUTOMEJORA.md](docs/AUTOMEJORA.md) | el ciclo medido, el banco y el examen, qué puede cambiar y qué no, y sus límites |
+| [ESCALAR.md](docs/ESCALAR.md) | usar tu PC con RTX (u otro) desde el portátil, y los avisos de límites |
+| [COMANDOS.md](docs/COMANDOS.md) | todos los comandos, opciones de arranque y `datos/config.json` |
+| [ARQUITECTURA.md](docs/ARQUITECTURA.md) | bucle de vida, prioridades a solas, memoria, herramientas, web, guardián y código |
 | [CONSCIENCIA.md](docs/CONSCIENCIA.md) | qué estructura imita, qué no sabemos y qué se registra |
 | [HOJA_DE_RUTA.md](docs/HOJA_DE_RUTA.md) | fases y en qué punto está cada una |
 
@@ -62,29 +69,32 @@ Comandos (todos en [docs/COMANDOS.md](docs/COMANDOS.md)): `/estado` · `/modelo`
 
 ```
 Orion/
-├─ src/, include/orion/   el código (C++20): util, http, ollama, memoria, sistema, herramientas, mente, nucleo,
-│                         main_orion (el agente), main_guardian (el guardián)
+├─ src/, include/orion/   C++20: util, http, ollama, memoria, sistema, herramientas, habilidades, mente, evaluacion,
+│                         automejora, nucleo; main_orion (el agente) y main_guardian (el guardián)
+├─ prompts/sistema.md     sus instrucciones de comportamiento (las mejora ella, midiendo)
+├─ evaluacion/            banco.json (su banco de pruebas) y examen_referencia.json
+├─ interfaz/index.html    su interfaz web (la puede modificar ella)
 ├─ tests/test_orion.cpp   pruebas con un Ollama simulado (no necesitan Ollama ni red)
-├─ third_party/json.hpp   nlohmann/json (MIT), incluido: no hay nada que descargar para compilar
+├─ third_party/json.hpp   nlohmann/json (MIT), incluido
 ├─ docs/                  documentación
 ├─ datos/                 (se crea al arrancar) su memoria, configuración y registros
-└─ legacy/                proyectos anteriores: demostrador (Python/C++/Colab), agente Python, modelo de bytes
+└─ legacy/                proyectos anteriores
 ```
 
 ## Estado real (qué está comprobado y qué no)
 
-**Comprobado** (127 comprobaciones automáticas con un Ollama simulado):
-- HTTP propio con streaming y cancelación; chat; uso de herramientas en bucle, incluidas las llamadas escritas como texto y los modelos que no admiten herramientas.
-- Comandos reales del sistema, archivos y el tratamiento del HTML de búsquedas.
-- Memoria y su persistencia; reflexión, diario y `yo.md`; metas trabajadas a solas.
-- Interrupción y `/para`; todos los comandos; los ejecutables reales por la terminal; el caso de Ollama caído.
-- Guardián: reinicio a petición, parada tras caídas repetidas, aplicar una versión nueva y volver atrás si está rota.
-- Sin errores con AddressSanitizer, UBSan y ThreadSanitizer, y con clang `-Werror`. Compila para Windows (MinGW).
-- `compilar_nueva_version` se probó de verdad: Orion compiló su propio código en unos 40 s.
+**Comprobado** con **202 comprobaciones** automáticas y un Ollama simulado:
+- memoria por significado (encuentra "física" al preguntar por "ciencia") y resúmenes;
+- habilidades que solo se guardan si funcionan; práctica que ejecuta, compara, ajusta la dificultad y saca lecciones;
+- metas por pasos;
+- un **ciclo de automejora completo**, con procesos y git reales: mide (0/2 → 1/2), acepta; en el segundo ciclo rechaza un cambio que empeora el examen; `/volver` lo deshace; avisa si el examen cambia;
+- la interfaz web (token, protección del `Host`, chat, comandos, sondeo continuo);
+- cambio automático al dispositivo más rápido y vuelta al local si cae; avisos de límites;
+- lo anterior: herramientas, guardián y versiones, interrupción, ejecutables reales.
+
+Sin errores con AddressSanitizer, UBSan y ThreadSanitizer, ni con clang `-Werror`. Compila para Windows (MinGW). La página web se probó en Chromium (claro, oscuro y móvil) sin errores de JavaScript.
 
 **No comprobado todavía:**
-- con Ollama y `qwen2.5:3b` reales;
-- con MSVC y ejecutándose en Windows;
-- la búsqueda web real (el entorno de desarrollo no tenía acceso a internet).
-
-La calidad de sus decisiones depende del modelo de 3B: se equivocará. Revisa `/acciones`, `/recuerdos` y `git diff`.
+- con Ollama y `qwen2.5:3b` reales: calidad de sus decisiones, si el modelo da vectores de significado (si no, busca por palabras) y velocidad real de las evaluaciones;
+- con MSVC en Windows;
+- la búsqueda web real.

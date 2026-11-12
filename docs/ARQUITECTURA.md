@@ -2,31 +2,42 @@
 
 ## Idea general
 
-Una persona no funciona "mensaje → respuesta": recibe estímulos sin parar y piensa también cuando nadie le habla. Orion imita esa estructura con un **bucle de vida** y dos hilos:
+Una persona no funciona "mensaje → respuesta": recibe estímulos sin parar y piensa también cuando nadie le habla. Orion imita esa estructura con un **bucle de vida**:
 
 ```
-            tú (terminal)
-                 │  mensajes y /comandos
-                 ▼
-  ┌──────────────────────────────┐    los /comandos se atienden al momento
-  │ HILO DE TERMINAL             │──► (estadísticas, memoria, pausa...)
-  └──────────────┬───────────────┘
-                 │ cola de mensajes  +  señal "deja lo que estás haciendo"
-                 ▼
-  ┌──────────────────────────────┐
-  │ HILO DE MENTE (bucle de vida)│
-  │ 1. ¿hay mensajes? → responder│◄──── un único modelo (Ollama, streaming, cancelable)
-  │ 2. si no, según el ritmo:    │
-  │    · reflexionar             │────► datos/  (todo se guarda al momento)
-  │    · trabajar en una meta    │◄───► herramientas: comandos, archivos, internet,
-  │    · escribir el diario      │      memoria, compilarse, reiniciarse
-  │    · revisar yo.md           │
-  │    · o descansar             │
-  └──────────────────────────────┘
+     tú (terminal)        tú (navegador: interfaz web local, 127.0.0.1 + token)
+          │                      │
+          ▼                      ▼
+  ┌──────────────────┐   ┌──────────────────┐     los /comandos se atienden al momento
+  │ HILO DE TERMINAL │   │ SERVIDOR WEB     │──►  (un comando cada vez, venga de donde venga)
+  └────────┬─────────┘   └────────┬─────────┘
+           └──────────┬───────────┘
+                      │ cola de mensajes  +  señal "deja lo que estás haciendo"
+                      ▼
+  ┌──────────────────────────────────────────┐
+  │ HILO DE MENTE (bucle de vida)            │◄── un único modelo (Ollama local o el de otro
+  │ 1. ¿hay mensajes? → responder            │    ordenador tuyo, si es más rápido)
+  │ 2. cada 10 min: dispositivos y límites   │
+  │ 3. si no le hablas, por prioridad:       │──► datos/  (todo se guarda al momento)
+  │    reflexionar · trabajar en una meta    │
+  │    (un paso) · indexar por significado · │◄─► herramientas: comandos, archivos, internet,
+  │    resumir lo antiguo · diario · yo.md · │    memoria, habilidades, compilarse, reiniciarse
+  │    automejora medida · practicar ·       │
+  │    descansar                             │──► orion --evaluar (proceso aparte, para medirse)
+  └──────────────────────────────────────────┘
 ```
 
 - **Tu mensaje interrumpe**: el hilo de terminal pone el mensaje en la cola y activa la señal de cancelación. La generación en curso se corta al instante (Orion cierra la conexión con Ollama y Ollama deja de generar). La tarea interrumpida no deja nada a medias y se reintenta más tarde.
-- **Ritmo** (`/ritmo`): cada cuánto piensa a solas si no le hablas. *bajo* 15 min, *medio* 2 min, *alto* 20 s. Si no hay nada nuevo que pensar, **descansa** y no gasta CPU. Si falla (por ejemplo, Ollama caído), espera cada vez más entre intentos.
+- **Ritmo** (`/ritmo`): cada cuánto piensa a solas si no le hablas. *bajo* 15 min, *medio* 2 min, *alto* 20 s. Si hay trabajo pendiente (por ejemplo, el siguiente paso de una meta), lo encadena sin esperar, salvo con *bajo*. Si no hay nada nuevo que pensar, **descansa** y no gasta CPU. Si falla (por ejemplo, Ollama caído), espera cada vez más entre intentos.
+- **Prioridades a solas** (de mayor a menor):
+  1. reflexionar si hay conversación nueva;
+  2. el siguiente paso de una meta;
+  3. indexar recuerdos por significado;
+  4. resumir conversación antigua;
+  5. diario;
+  6. `yo.md`;
+  7. automejora medida (cada 12 h, tras 30 min sin hablar);
+  8. práctica (cada 60 min).
 - **Gracia**: tras hablar contigo espera 20 s antes de ponerse a pensar a solas, para no quitarte el modelo si sigues escribiendo.
 
 ## Herramientas (acceso total)
@@ -73,7 +84,14 @@ Archivos de texto legibles, que Orion podrá leer y modificar ella misma:
 | `metas.json` | metas | lo que quiere aprender, su estado y lo aprendido |
 | `acciones.jsonl` | registro | cada uso de una herramienta (fecha, origen, argumentos, resultado) |
 | `actualizacion/` | automejora | la versión nueva compilada, esperando a que el guardián la aplique |
-| `recuerdos.jsonl` | semántica | hechos duraderos (`usuario`, `proyecto`, `preferencia`, `yo`, `mundo`, `manual`) con id `rN` |
+| `recuerdos.jsonl` | semántica | hechos duraderos (`usuario`, `proyecto`, `preferencia`, `yo`, `mundo`, `manual`, `aprendido`, `leccion`, `resumen`) con id `rN` |
+| `vectores.bin` | semántica | el vector de significado de cada recuerdo (con el modelo que lo generó) |
+| `habilidades/` | procedimental | scripts verificados (`nombre.json` + el script) |
+| `practica.jsonl` | práctica | cada ejercicio: script, predicción, salida real y acierto (datos para la fase 5) |
+| `mejoras.jsonl` | automejora | cada propuesta, sus mediciones y si se aceptó |
+| `automejora/` | automejora | caché de mediciones, la propuesta en prueba y la carpeta de trabajo de las evaluaciones |
+| `examen_huella.txt` | automejora | huella SHA-256 del examen de referencia |
+| `web_token.txt` | interfaz | token de la interfaz web |
 | `diario.md` | autobiográfica | entradas en primera persona |
 | `yo.md` | modelo de sí misma | quién es, qué sabe hacer, sus límites (con su hardware medido), qué quiere aprender, cambios |
 | `yo_versiones/` | historial | cada versión anterior de `yo.md` |
@@ -83,9 +101,13 @@ Archivos de texto legibles, que Orion podrá leer y modificar ella misma:
 
 **Por qué archivos y no SQLite:** no hay dependencias que instalar en Windows, se pueden abrir con cualquier editor, Orion puede leerlos y modificarlos directamente, y para decenas de miles de recuerdos la búsqueda en memoria es instantánea. Si algún día hace falta, se cambia solo `src/memoria.cpp`.
 
-**Búsqueda:** por palabras (BM25, sin tildes ni mayúsculas). En la fase 2 se añade búsqueda por significado (embeddings del mismo modelo).
+**Búsqueda:** híbrida. Por palabras (BM25, sin tildes, mayúsculas ni palabras vacías) y por **significado** (coseno con vectores del mismo modelo, normalizado en el rango observado). Detalles en [APRENDER.md](APRENDER.md).
 
-**Cómo se usa al hablar:** en cada respuesta, el contexto incluye `yo.md`, una línea con su estado y hardware medidos, los 6 recuerdos más relevantes para tu mensaje y la conversación reciente.
+**Cómo se usa al hablar:** en cada respuesta, el contexto incluye:
+- sus instrucciones (`prompts/sistema.md`) y "Mi cuerpo";
+- `yo.md` y una línea con su estado y hardware medidos;
+- las habilidades relevantes y los 6 recuerdos más relevantes para tu mensaje;
+- la conversación reciente.
 
 ## Reflexión a solas
 
@@ -110,10 +132,32 @@ Además aplica las **versiones nuevas** que Orion compila de sí misma:
 | Archivo | Qué hace |
 |---|---|
 | `util` | texto (UTF-8, sin tildes), tiempo, archivos atómicos, consola UTF-8 en Windows |
-| `http` | HTTP/1.1 propio sobre sockets (Windows y Linux): cliente con streaming y cancelación, servidor mínimo |
-| `ollama` | chat en streaming, `/api/show` (parámetros, cuantización, contexto) y `/api/ps` (RAM/VRAM) |
+| `http` | HTTP/1.1 propio sobre sockets (Windows y Linux): cliente con streaming y cancelación; servidor con cabeceras que recoge sus hilos (interfaz web y pruebas) |
+| `ollama` | chat en streaming con herramientas, vectores (`/api/embed`), `/api/show` (parámetros, cuantización, contexto, ruta de los pesos) y `/api/ps` (RAM/VRAM); cambiar de dirección o modelo sin carreras entre hilos |
 | `memoria` | los archivos de `datos/`, BM25, diario, `yo.md` y estadísticas |
 | `sistema` | hardware (CPU, RAM, disco, memoria del proceso) y ejecución de procesos (git, guardián) |
 | `herramientas` | comandos, archivos, internet (curl), memoria, metas, compilarse y reiniciarse; registro de acciones |
-| `mente` | contexto ("Mi cuerpo", recuerdos, estado); bucle de herramientas; responder, metas, reflexionar, diario, `yo.md` |
-| `nucleo` | bucle de vida, hilos, interrupción, comandos |
+| `habilidades` | biblioteca de scripts verificados (guardar con prueba, usar, relevantes) |
+| `mente` | contexto (instrucciones, "Mi cuerpo", habilidades, recuerdos, estado); bucle de herramientas; responder, metas por pasos, práctica, vectores, resúmenes, reflexión, diario, `yo.md` |
+| `evaluacion` | tareas con comprobación objetiva; `orion --evaluar`; medir en un proceso aparte |
+| `automejora` | ciclo medido (banco, propuesta, examen, aceptar o rechazar, git), `/volver`, huella del examen |
+| `nucleo` | bucle de vida, hilos, interrupción, comandos, interfaz web, dispositivos y límites |
+
+## Interfaz web
+
+Al arrancar abre `http://127.0.0.1:7860/?t=TOKEN` (`/web`, `/web abrir`). Tiene:
+- **chat** con todo lo que sale por la terminal, en directo;
+- paneles de **estado**, **metas**, **automejora**, **últimas acciones** y **recuerdos**;
+- botones para pausa, reflexionar, mejorarse, practicar y parar.
+
+La página es `interfaz/index.html` del repositorio y se lee del disco en cada visita, así que **Orion puede modificar su propia interfaz**.
+
+Seguridad, porque tiene acceso total:
+- solo escucha en `127.0.0.1`;
+- la API exige el token en la cabecera `X-Orion-Token` (una web ajena no puede enviarla sin pasar el control del navegador);
+- rechaza cualquier `Host` que no sea `127.0.0.1` o `localhost` (protección contra *DNS rebinding*);
+- desde la web no se puede apagar ni reiniciar.
+
+## Dispositivos
+
+Ver [ESCALAR.md](ESCALAR.md). La dirección y el modelo de Ollama se pueden cambiar en caliente: lo que se esté generando termina con la conexión anterior.

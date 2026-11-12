@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdio>
 #include <map>
+#include <random>
 
 namespace orion {
 
@@ -31,6 +32,14 @@ const char* AYUDA = R"(Habla escribiendo sin barra. Comandos:
   /aprende <tema>       ponerle una meta de aprendizaje
   /acciones [n]         últimas acciones con sus herramientas (comandos, archivos, internet)
   /permisos [total|lectura|ninguno]  qué herramientas puede usar (por defecto: total)
+  /habilidades          lo que ya sabe hacer (scripts verificados que reutiliza)
+  /practica [ahora]     su práctica con juez real: nivel, aciertos, últimos ejercicios
+  /dispositivos         otros ordenadores tuyos con Ollama: añadir, usar, medir, auto (se pasa al más rápido)
+  /limites              ¿me limita el hardware? (velocidad, RAM, contexto)
+  /web [abrir]          dirección de la interfaz web local (chat, actividad, metas, mejoras...)
+  /mejoras              historial de automejora: cada cambio, su medición y si se aceptó
+  /mejorate             hacer ahora un ciclo de automejora medida
+  /volver <n>           deshacer la mejora número n
   /reflexiona           que reflexione ahora sobre la conversación
   /pausa · /sigue       detener o reanudar su pensamiento a solas
   /ritmo [bajo|medio|alto]  cada cuánto piensa a solas
@@ -42,7 +51,15 @@ const char* AYUDA = R"(Habla escribiendo sin barra. Comandos:
 }  // namespace
 
 Nucleo::Nucleo(Config cfg, OpcionesNucleo op, Salida salida)
-    : cfg_(std::move(cfg)), op_(std::move(op)), salida_(std::move(salida)), mem_(op_.datos), llm_(cfg_.ollama, cfg_.modelo), mente_(cfg_, mem_, llm_) {
+    : cfg_(std::move(cfg)), op_(std::move(op)), salida_(std::move(salida)), mem_(op_.datos), llm_(cfg_.ollama, cfg_.modelo), habilidades_(op_.datos / "habilidades"),
+      mente_(cfg_, mem_, llm_), automejora_(ContextoAutomejora{op_.repo, op_.datos, op_.ejecutable}, llm_) {
+    mente_.fijar_habilidades(&habilidades_);
+    mente_.fijar_dir_prompts(op_.prompts);
+    Salida original = salida_;   // todo lo que sale por la terminal también va a la interfaz web
+    salida_ = [this, original](const std::string& t) {
+        if (original) original(t);
+        registrar_evento(t);
+    };
     ritmo_ = ritmo_a_int(cfg_.ritmo);
 }
 
@@ -80,6 +97,15 @@ void Nucleo::arrancar() {
     inicio_ = ultima_interaccion_ = ahora_s();
     ultima_tarea_ = 0;
     mem_.sumar("arranques", 1);
+    if (cfg_.dispositivo != "local") {   // seguir en el dispositivo donde estaba (si ya no responde, la revisión vuelve al local)
+        json d;
+        if (dispositivo(cfg_.dispositivo, d)) {
+            llm_.cambiar_url(d.value("ollama", cfg_.ollama));
+            if (d.contains("modelo")) llm_.cambiar_modelo(d["modelo"].get<std::string>());
+        } else {
+            cfg_.dispositivo = "local";
+        }
+    }
     std::string version;
     bool hay_ollama = llm_.disponible(&version);
     std::string cab = op_.color ? std::string(CIAN) + "Orion" + NORMAL : "Orion";
@@ -106,6 +132,7 @@ void Nucleo::arrancar() {
     }
     mente_.fijar_cuerpo(describir_cuerpo());
     decir("Permisos: " + cfg_.permisos + (cfg_.permisos == "total" ? " (comandos, archivos, internet, su código y su memoria; todo queda en datos/acciones.jsonl)" : ""));
+    iniciar_web();
     decir("Escribe para hablar conmigo. /ayuda para ver los comandos.");
     hilo_ = std::thread([this] { bucle_mente(); });
 }
@@ -160,6 +187,7 @@ void Nucleo::esperar_inactividad(double max_s) {
 
 void Nucleo::parar() {
     if (parado_.exchange(true)) return;
+    if (web_) web_->parar();
     salir_ = true;
     cancelar_fondo_ = true;
     cv_.notify_all();
@@ -174,7 +202,7 @@ void Nucleo::bucle_mente() {
         std::string msg;
         {
             std::unique_lock<std::mutex> l(mu_);
-            cv_.wait_for(l, std::chrono::milliseconds(300), [&] { return salir_ || !cola_.empty() || reflexion_pedida_; });
+            cv_.wait_for(l, std::chrono::milliseconds(300), [&] { return salir_ || !cola_.empty() || reflexion_pedida_ || practica_pedida_ || mejora_pedida_; });
             if (salir_) break;
             if (!cola_.empty()) {
                 msg = cola_.front();
@@ -183,9 +211,13 @@ void Nucleo::bucle_mente() {
             }
             if (!modelo_pendiente_.empty()) {
                 cfg_.modelo = modelo_pendiente_;
-                llm_.cambiar_modelo(modelo_pendiente_);
+                bool con_modelo_propio = false;
+                for (auto& x : cfg_.dispositivos)
+                    if (x.value("nombre", std::string()) == cfg_.dispositivo && x.contains("modelo")) con_modelo_propio = true;
+                if (!con_modelo_propio) llm_.cambiar_modelo(modelo_pendiente_);
                 modelo_pendiente_.clear();
                 mente_.modelo_cambiado();
+                std::lock_guard<std::mutex> li(mu_info_);
                 modelo_cache_t_ = 0;
             }
         }
@@ -196,21 +228,43 @@ void Nucleo::bucle_mente() {
             ocupado_ = false;
             continue;
         }
+        if (ahora_s() - ultima_revision_ >= 600) {   // cada 10 min: dispositivos y límites (no usa el modelo)
+            ultima_revision_ = ahora_s();
+            try {
+                std::string d = revisar_dispositivos();
+                if (!d.empty()) decir(d);
+                std::string lim = evaluar_limites();
+                if (!lim.empty()) decir(lim);
+            } catch (const std::exception& e) {
+                nota(std::string("no pude revisar mis dispositivos: ") + e.what());
+            }
+        }
         bool forzar = reflexion_pedida_.exchange(false);
+        bool pedida = practica_pedida_.exchange(false);
+        bool mejora = mejora_pedida_.exchange(false);
+        if (mejora) {
+            cancelar_fondo_ = false;
+            try { mejorarse(true); } catch (const std::exception& e) { nota(std::string("no pude terminar la automejora: ") + e.what()); }
+            fijar_actividad(pausado_ ? "en pausa" : "en reposo");
+            ultima_tarea_ = ahora_s();
+            continue;
+        }
         double ahora = ahora_s();
         double espera = intervalo_ritmo() * (1 << std::min(errores_seguidos, 4));
-        if (forzar || (op_.autonomo && !pausado_ && ahora - ultima_interaccion_ >= op_.gracia_s && ahora - ultima_tarea_ >= espera)) {
+        if (forzar || pedida || (op_.autonomo && !pausado_ && ahora - ultima_interaccion_ >= op_.gracia_s && ahora - ultima_tarea_ >= espera)) {
             cancelar_fondo_ = false;
             ultima_tarea_ = ahora;
+            bool hizo = false;
             try {
-                tarea_a_solas(forzar);
+                hizo = tarea_a_solas(forzar);
                 errores_seguidos = 0;
             } catch (const std::exception& e) {
                 ++errores_seguidos;
                 nota(std::string("no pude terminar: ") + e.what());
             }
             fijar_actividad(pausado_ ? "en pausa" : "en reposo");
-            ultima_tarea_ = ahora_s();
+            // si había trabajo (p. ej. el siguiente paso de una meta), sigue sin esperar; con ritmo bajo, respeta el intervalo
+            ultima_tarea_ = hizo && ritmo_ != 0 && !cancelar_fondo_ ? 0 : ahora_s();
         }
     }
 }
@@ -267,11 +321,314 @@ void Nucleo::quizas_reiniciar() {
     salir_ = true;
 }
 
+// ------------------------------------------------------------------ interfaz web
+void Nucleo::registrar_evento(const std::string& t) {
+    std::string limpio;
+    for (size_t i = 0; i < t.size(); ++i) {   // quitar los códigos de color ANSI
+        if (t[i] == '\x1b' && i + 1 < t.size() && t[i + 1] == '[') {
+            size_t f = t.find('m', i);
+            if (f != std::string::npos) { i = f; continue; }
+        }
+        limpio += t[i];
+    }
+    std::lock_guard<std::mutex> l(mu_ev_);
+    eventos_ += limpio;
+    if (eventos_.size() > 400000) {
+        eventos_.erase(0, 100000);
+        base_eventos_ += 100000;
+    }
+}
+
+std::string Nucleo::url_web() const {
+    return puerto_web_ > 0 ? "http://127.0.0.1:" + std::to_string(puerto_web_) + "/?t=" + token_web_ : "";
+}
+
+void Nucleo::iniciar_web() {
+    if (cfg_.web_puerto <= 0) return;
+    token_web_ = trim(leer_archivo(op_.datos / "web_token.txt"));
+    if (token_web_.size() < 32) {
+        std::random_device rd;
+        std::string semilla = std::to_string(rd()) + std::to_string(rd()) + std::to_string(rd()) + std::to_string(ahora_s()) + op_.datos.string();
+        token_web_ = sha256_hex(semilla).substr(0, 40);
+        escribir_atomico(op_.datos / "web_token.txt", token_web_ + "\n");
+    }
+    web_ = std::make_unique<ServidorHttp>([this](const PeticionHttp& p) { return atender_web(p); });
+    try {
+        puerto_web_ = web_->iniciar(cfg_.web_puerto, "127.0.0.1");
+        decir("Interfaz web: " + url_web() + "   (/web abrir)");
+    } catch (const std::exception& e) {
+        web_.reset();
+        decir(std::string("⚠ No pude abrir la interfaz web en el puerto ") + std::to_string(cfg_.web_puerto) + ": " + e.what() +
+              " (cambia \"web_puerto\" en config.json)");
+    }
+}
+
+json Nucleo::estado_json() {
+    json s = mem_.estadisticas();
+    InfoModelo m;
+    {
+        std::lock_guard<std::mutex> l(mu_info_);
+        m = modelo_cache_;
+    }
+    Config c;
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        c = cfg_;
+    }
+    std::string donde = !m.cargado ? "—" : m.bytes_en_vram <= 0 ? "CPU" : m.bytes_en_vram >= m.bytes_en_memoria ? "GPU" : "CPU + GPU";
+    std::string url = llm_.url();
+    if (!contiene(url, "127.0.0.1") && !contiene(url, "localhost")) donde += " (" + url + ")";
+    return {{"actividad", actividad()}, {"pausado", pausado_.load()}, {"modelo", c.modelo},
+            {"parametros", m.parametros > 0 ? formato_numero(m.parametros) + " de parámetros" : m.tamano_parametros}, {"dispositivo", donde},
+            {"tokens_por_segundo", s.value("tokens_por_segundo", 0.0)}, {"recuerdos", mem_.recuerdos().size()}, {"turnos", mem_.num_turnos()},
+            {"habilidades", habilidades_.todas().size()}, {"practica_nivel", static_cast<int>(s.value("practica_nivel", 1.0))},
+            {"practica_aciertos", std::to_string(static_cast<int>(s.value("practicas_acertadas", 0.0))) + "/" + std::to_string(static_cast<int>(s.value("practicas", 0.0)))},
+            {"permisos", c.permisos}, {"ritmo", ritmo_nombre(ritmo_)}, {"encendida", formato_duracion(ahora_s() - inicio_)}};
+}
+
+RespuestaServidor Nucleo::atender_web(const PeticionHttp& p) {
+    RespuestaServidor r;
+    r.cabeceras["Cache-Control"] = "no-store";
+    auto error = [&](int estado, const std::string& m) {
+        r.estado = estado;
+        r.trozos = {json{{"error", m}}.dump()};
+        return r;
+    };
+    // solo desde este ordenador (también protege contra "DNS rebinding")
+    std::string host = p.cabecera("host");
+    if (!empieza_por(host, "127.0.0.1:") && !empieza_por(host, "localhost:") && host != "127.0.0.1" && host != "localhost") return error(403, "host no permitido");
+    std::string ruta = p.ruta, consulta;
+    size_t q = ruta.find('?');
+    if (q != std::string::npos) { consulta = ruta.substr(q + 1); ruta = ruta.substr(0, q); }
+    auto parametro = [&](const std::string& k) -> std::string {
+        for (auto& par : split(consulta, '&')) {
+            size_t e = par.find('=');
+            if (e != std::string::npos && par.substr(0, e) == k) return Herramientas::decodificar_url(par.substr(e + 1));
+        }
+        return "";
+    };
+    if (ruta == "/" || ruta == "/index.html") {
+        r.tipo = "text/html; charset=utf-8";
+        std::string html = op_.repo.empty() ? "" : leer_archivo(op_.repo / "interfaz" / "index.html");   // la puede modificar ella
+        if (html.empty())
+            html = "<!doctype html><meta charset=utf-8><title>Orion</title><body style='font-family:sans-serif;max-width:700px;margin:40px auto'>"
+                   "<h1>Orion</h1><p>No encuentro <code>interfaz/index.html</code> en mi repositorio. Arráncame desde la carpeta del repositorio "
+                   "para ver la interfaz completa.</p></body>";
+        r.trozos = {html};
+        return r;
+    }
+    if (!empieza_por(ruta, "/api/")) return error(404, "no existe");
+    // la API exige el token en una cabecera: una página web ajena no puede enviarla sin permiso del navegador
+    if (token_web_.empty() || p.cabecera("x-orion-token") != token_web_) return error(403, "token");
+    if (ruta == "/api/estado") { r.trozos = {estado_json().dump()}; return r; }
+    if (ruta == "/api/eventos") {
+        long long desde = std::atoll(parametro("desde").c_str());
+        std::lock_guard<std::mutex> le(mu_ev_);
+        if (desde < base_eventos_ || desde > base_eventos_ + static_cast<long long>(eventos_.size())) desde = base_eventos_;
+        std::string t = eventos_.substr(static_cast<size_t>(desde - base_eventos_));
+        r.trozos = {json{{"texto", t}, {"siguiente", base_eventos_ + static_cast<long long>(eventos_.size())}}.dump(-1, ' ', false, json::error_handler_t::replace)};
+        return r;
+    }
+    if (ruta == "/api/mensaje" && p.metodo == "POST") {
+        json j = json::parse(p.cuerpo, nullptr, false);
+        std::string texto = j.is_object() ? trim(j.value("texto", std::string())) : "";
+        if (texto.empty()) return error(400, "mensaje vacío");
+        if (texto[0] == '/') {
+            std::string cmd = split(texto, ' ')[0];
+            if (cmd == "/salir" || cmd == "/reinicia") { r.trozos = {json{{"respuesta", "Desde la web no me apago ni me reinicio: hazlo en la terminal."}}.dump()}; return r; }
+            if (cmd == "/para") { entrada(texto); r.trozos = {json{{"respuesta", "Corto lo que estaba diciendo."}}.dump()}; return r; }
+            r.trozos = {json{{"respuesta", comando(texto)}}.dump(-1, ' ', false, json::error_handler_t::replace)};
+            return r;
+        }
+        decir("Tú (web)> " + texto);
+        entrada(texto);
+        r.trozos = {"{}"};
+        return r;
+    }
+    auto ultimos = [&](const json& a, size_t def) {
+        size_t n = parametro("n").empty() ? def : static_cast<size_t>(std::max(1, std::atoi(parametro("n").c_str())));
+        json out = json::array();
+        for (size_t i = a.size() > n ? a.size() - n : 0; i < a.size(); ++i) out.push_back(a[i]);
+        return out;
+    };
+    if (ruta == "/api/metas") {
+        json a = json::array();
+        for (auto& m : mem_.metas()) a.push_back({{"id", m.id}, {"tema", m.tema}, {"estado", m.estado}, {"plan", m.plan}, {"paso", m.paso}, {"resultado", recortar(m.resultado, 600)}});
+        r.trozos = {a.dump(-1, ' ', false, json::error_handler_t::replace)};
+        return r;
+    }
+    if (ruta == "/api/mejoras") {
+        json a = automejora_.historial();
+        for (auto& e : a) { e.erase("sistema_antes"); e.erase("sistema_despues"); }
+        r.trozos = {ultimos(a, 50).dump(-1, ' ', false, json::error_handler_t::replace)};
+        return r;
+    }
+    if (ruta == "/api/acciones") {
+        json a = json::array();
+        for (auto& lin : split_lines(leer_archivo(op_.datos / "acciones.jsonl"))) {
+            json j = json::parse(lin, nullptr, false);
+            if (j.is_object()) { j.erase("resultado"); a.push_back(j); }
+        }
+        r.trozos = {ultimos(a, 10).dump(-1, ' ', false, json::error_handler_t::replace)};
+        return r;
+    }
+    if (ruta == "/api/recuerdos") {
+        json a = json::array();
+        for (auto& x : mem_.recuerdos()) a.push_back({{"id", x.id}, {"tipo", x.tipo}, {"texto", x.texto}});
+        r.trozos = {ultimos(a, 10).dump(-1, ' ', false, json::error_handler_t::replace)};
+        return r;
+    }
+    if (ruta == "/api/habilidades") {
+        json a = json::array();
+        for (auto& h : habilidades_.todas()) a.push_back({{"nombre", h.nombre}, {"descripcion", h.descripcion}, {"usos", h.usos}, {"exitos", h.exitos}});
+        r.trozos = {a.dump(-1, ' ', false, json::error_handler_t::replace)};
+        return r;
+    }
+    return error(404, "no existe");
+}
+
+// ------------------------------------------------------------------ escalado a otros dispositivos
+double Nucleo::medir_velocidad(const std::string& url, const std::string& modelo, std::string* error) {
+    Ollama o(url, modelo);
+    OpcionesGeneracion op;
+    op.temperatura = 0;
+    op.num_predict = 64;
+    op.num_ctx = 2048;
+    auto r = o.chat(json::array({{{"role", "user"}, {"content", "Cuenta del 1 al 40 separando los números con comas."}}}), op, nullptr, nullptr);
+    if (!r.ok) {
+        if (error) *error = r.error;
+        return 0;
+    }
+    return r.tokens_por_segundo();
+}
+
+bool Nucleo::dispositivo(const std::string& nombre, json& d) {
+    std::lock_guard<std::mutex> l(mu_);
+    for (auto& x : cfg_.dispositivos)
+        if (x.value("nombre", std::string()) == nombre) { d = x; return true; }
+    return false;
+}
+
+void Nucleo::usar_dispositivo(const std::string& nombre, const std::string& url, const std::string& modelo) {
+    std::string base;
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        cfg_.dispositivo = nombre;
+        base = cfg_.modelo;   // el modelo base (local) no cambia: el del dispositivo solo se usa mientras se piensa allí
+        cfg_.guardar(op_.datos / "config.json");
+    }
+    llm_.cambiar_url(url);   // Ollama es seguro entre hilos: lo que esté generando termina con la dirección anterior
+    llm_.cambiar_modelo(modelo.empty() ? base : modelo);
+    mente_.modelo_cambiado();
+    std::lock_guard<std::mutex> l(mu_info_);
+    modelo_cache_t_ = 0;
+}
+
+std::string Nucleo::revisar_dispositivos() {
+    Config c;
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        c = cfg_;
+    }
+    if (c.dispositivos.empty()) return "";
+    json s = mem_.estadisticas();
+    // 1) si el dispositivo actual ya no responde, volver al local
+    if (c.dispositivo != "local") {
+        json d;
+        bool existe = dispositivo(c.dispositivo, d);
+        if (!existe || !Ollama(d.value("ollama", std::string()), c.modelo).disponible()) {
+            usar_dispositivo("local", c.ollama, "");
+            return "⚠ " + c.dispositivo + " no responde: vuelvo a pensar en este ordenador (local).";
+        }
+    }
+    if (!c.dispositivo_auto) return "";
+    // 2) medir los que no se han medido y elegir el más rápido que responda
+    double v_local = s.value("velocidad_local", s.value("tokens_por_segundo", 0.0));
+    std::string mejor = "local", url_mejor = c.ollama, modelo_mejor;
+    double v_mejor = v_local;
+    for (auto& d : c.dispositivos) {
+        std::string n = d.value("nombre", std::string()), url = d.value("ollama", std::string()), mod = d.value("modelo", c.modelo);
+        if (n.empty() || url.empty() || !Ollama(url, mod).disponible()) continue;
+        double v = s.value("velocidad_" + n, 0.0);
+        if (v <= 0) {
+            std::string err;
+            v = medir_velocidad(url, mod, &err);
+            if (v > 0) mem_.fijar("velocidad_" + n, v);
+            else continue;
+        }
+        if (v > v_mejor * 1.5) { mejor = n; url_mejor = url; modelo_mejor = mod; v_mejor = v; }   // solo si es claramente más rápido
+    }
+    if (mejor == c.dispositivo || mejor == "local") return "";
+    usar_dispositivo(mejor, url_mejor, modelo_mejor);
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), " (%.1f tokens/s frente a %.1f aquí)", v_mejor, v_local);
+    mem_.anadir_turno("orion", "[Escalado] Me paso a pensar en " + mejor + buf + ".");
+    return "★ Me paso a pensar en «" + mejor + "»" + buf + ". Si deja de responder, vuelvo sola a este ordenador.";
+}
+
+std::string Nucleo::evaluar_limites(bool forzar) {
+    json s = mem_.estadisticas();
+    if (!forzar && ahora_s() - s.value("limites_aviso", 0.0) < 86400) return "";
+    Hardware h = medir_hardware(op_.datos);
+    Config c;
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        c = cfg_;
+    }
+    std::vector<std::string> limites;
+    double tps = s.value("tokens_por_segundo", 0.0);
+    char buf[200];
+    if (tps > 0 && tps < 4) { std::snprintf(buf, sizeof(buf), "pienso despacio (%.1f tokens/s: una respuesta larga tarda minutos)", tps); limites.push_back(buf); }
+    if (h.ram_total > 0 && h.ram_libre < 1.5e9) limites.push_back("queda poca RAM libre (" + formato_bytes(h.ram_libre) + " de " + formato_bytes(h.ram_total) + ")");
+    double tp = s.value("tokens_prompt_ultimo", 0.0);
+    if (tp > 0.9 * c.num_ctx) limites.push_back("mi memoria de trabajo se llena (" + std::to_string(static_cast<int>(tp)) + " de " + std::to_string(c.num_ctx) + " tokens de contexto)");
+    if (limites.empty()) return "";
+    mem_.fijar("limites_aviso", ahora_s());
+    std::string texto = "Me noto limitada por el hardware: " + join(limites, "; ") + ".";
+    mem_.recordar("yo", texto, "limites");
+    bool hay_otros = !c.dispositivos.empty();
+    return "⚠ " + texto + (hay_otros ? " Uso tus otros dispositivos cuando están disponibles (/dispositivos)."
+                                     : " Si tienes otro ordenador con Ollama (por ejemplo tu PC con RTX), regístralo con "
+                                       "/dispositivo añadir <nombre> http://IP:11434 [modelo] y lo usaré cuando esté encendido.");
+}
+
+bool Nucleo::mejorarse(bool forzada) {
+    std::string no = automejora_.disponible();
+    if (!no.empty()) {
+        nota("no puedo mejorarme ahora: " + no);
+        return false;
+    }
+    mem_.fijar("automejora_ultima", ahora_s());
+    fijar_actividad("mejorándome (mido, propongo un cambio y lo vuelvo a medir)");
+    nota(std::string(forzada ? "empiezo" : "me toca") + " un ciclo de automejora medida…");
+    Config c;
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        c = cfg_;
+    }
+    auto r = automejora_.ciclo(c, &cancelar_fondo_, [this](const std::string& t) { nota(t); });
+    if (r.cancelada || cancelar_fondo_) {
+        mem_.fijar("automejora_ultima", 0.0);   // se retoma más tarde
+        nota("lo dejo para luego: te atiendo");
+        return true;
+    }
+    if (r.aceptada) {
+        std::lock_guard<std::mutex> l(mu_);
+        if (r.temperatura > 0) cfg_.temperatura = r.temperatura;
+        if (r.max_pasos > 0) cfg_.max_pasos = r.max_pasos;
+        cfg_.guardar(op_.datos / "config.json");
+    }
+    if (r.aceptada) mem_.anadir_turno("orion", "[Automejora] " + r.texto);
+    decir((op_.color ? std::string(CIAN) + (r.aceptada ? "★ " : "· ") + NORMAL : (r.aceptada ? "★ " : "· ")) + std::string("Automejora: ") + r.texto);
+    return true;
+}
+
 Herramientas Nucleo::herramientas(const std::string& origen) {
     ContextoHerramientas c;
     c.datos = op_.datos;
     c.repo = op_.repo;
     c.memoria = &mem_;
+    c.habilidades = &habilidades_;
     {
         std::lock_guard<std::mutex> l(mu_);
         c.permisos = cfg_.permisos;
@@ -279,6 +636,8 @@ Herramientas Nucleo::herramientas(const std::string& origen) {
     c.origen = origen;
     c.aviso = [this](const std::string& t) { nota(t); };
     c.reinicio_pedido = &reinicio_pedido_;
+    c.vectorizar = [this](const std::string& t) { return mente_.vectorizar(t); };
+    c.modelo = llm_.modelo();
     {
         std::lock_guard<std::mutex> l(mu_);
         c.cmake = cfg_.cmake;
@@ -290,25 +649,35 @@ bool Nucleo::trabajar_en_metas() {
     Meta m;
     if (!mem_.proxima_meta(m)) return false;
     if (m.intentos >= 3) {
-        mem_.cerrar_meta(m.id, "fallida", "Lo intenté 3 veces sin terminar.");
-        nota("abandono la meta «" + m.tema + "» tras 3 intentos");
+        mem_.cerrar_meta(m.id, "fallida", "Fallé 3 veces seguidas en el paso " + std::to_string(m.paso + 1) + ".");
+        nota("abandono la meta «" + m.tema + "» tras 3 fallos seguidos");
         return true;
     }
-    mem_.contar_intento_meta(m.id);
-    std::string que = "aprendiendo: " + m.tema;
+    std::string que = "aprendiendo: " + m.tema + (m.plan.empty() ? " (planificando)" : " (paso " + std::to_string(std::min(m.paso + 1, m.plan.size())) + "/" + std::to_string(m.plan.size()) + ")");
     fijar_actividad(que);
     nota(que + "…");
     mente_.fijar_estado_actual(linea_estado_para_modelo());
     auto h = herramientas("meta " + m.id);
-    std::string res = mente_.trabajar_en_meta(m, &h, &cancelar_fondo_);
-    if (cancelar_fondo_ || res.empty()) {
+    Mente::AvanceMeta av;
+    try {
+        av = mente_.trabajar_en_meta(m, &h, &cancelar_fondo_);
+    } catch (...) {
+        mem_.contar_intento_meta(m.id);
+        throw;
+    }
+    if (av.cancelada || cancelar_fondo_) {
         nota("lo dejo para luego: te atiendo");
         return true;
     }
-    mem_.cerrar_meta(m.id, "hecha", res);
-    mem_.recordar("aprendido", "Sobre «" + m.tema + "»: " + recortar(res, 500), "meta");
-    mem_.anadir_turno("orion", "[He terminado de aprender sobre «" + m.tema + "»] " + res);
-    decir((op_.color ? std::string(CIAN) + "★ " + NORMAL : "★ ") + "He terminado de aprender sobre «" + m.tema + "»:\n" + res);
+    if (!av.terminada) {
+        nota("meta " + m.id + ": " + av.texto);
+        quizas_reiniciar();
+        return true;
+    }
+    mem_.cerrar_meta(m.id, "hecha", av.texto);
+    mem_.recordar("aprendido", "Sobre «" + m.tema + "»: " + recortar(av.texto, 500), "meta");
+    mem_.anadir_turno("orion", "[He terminado de aprender sobre «" + m.tema + "»] " + av.texto);
+    decir((op_.color ? std::string(CIAN) + "★ " + NORMAL : "★ ") + "He terminado de aprender sobre «" + m.tema + "»:\n" + av.texto);
     quizas_reiniciar();
     return true;
 }
@@ -323,6 +692,17 @@ bool Nucleo::tarea_a_solas(bool forzar_reflexion) {
         res = mente_.reflexionar(&cancelar_fondo_);
     } else if (cfg_.permisos != "ninguno" && trabajar_en_metas()) {
         return true;
+    } else if (mente_.hay_que_indexar()) {
+        que = "ordenando mis recuerdos por significado";
+        fijar_actividad(que);
+        res = mente_.indexar(&cancelar_fondo_);
+        if (!res.empty() && !cancelar_fondo_) nota(res);
+        return true;
+    } else if (mente_.hay_que_resumir()) {
+        que = "resumiendo conversaciones antiguas";
+        fijar_actividad(que);
+        nota(que + "…");
+        res = mente_.resumir_conversacion(&cancelar_fondo_);
     } else if (mente_.hay_que_escribir_diario()) {
         que = "escribiendo mi diario";
         fijar_actividad(que);
@@ -334,6 +714,14 @@ bool Nucleo::tarea_a_solas(bool forzar_reflexion) {
         fijar_actividad(que);
         nota(que + "…");
         res = mente_.actualizar_yo(&cancelar_fondo_, hechos_medidos());
+    } else if (cfg_.permisos == "total" && cfg_.automejora_cada_h > 0 && silencio >= 1800 &&
+               ahora_s() - mem_.estadisticas().value("automejora_ultima", 0.0) >= cfg_.automejora_cada_h * 3600 && automejora_.disponible().empty()) {
+        return mejorarse(false);
+    } else if (cfg_.permisos == "total" && cfg_.practica_cada_min > 0 && mente_.hay_que_practicar(cfg_.practica_cada_min * 60.0)) {
+        que = "practicando (predigo lo que hace un script y lo compruebo ejecutándolo)";
+        fijar_actividad(que);
+        nota(que + "…");
+        res = mente_.practicar(&cancelar_fondo_, op_.datos / "practica");
     } else {
         return false;   // nada nuevo: descansa (no gasta CPU)
     }
@@ -376,6 +764,10 @@ std::string Nucleo::describir_cuerpo() {
              "reiniciarme (el guardián aplica la versión nueva y vuelve a la anterior si falla). Registro cada cambio con git (git add/commit con ejecutar_comando).\n";
     else
         s += "- No sé dónde está mi código fuente (arráncame desde la carpeta del repositorio o con --repo).\n";
+    if (!op_.prompts.empty())
+        s += "- Mis instrucciones de comportamiento están en " + fs::absolute(op_.prompts / "sistema.md").string() +
+             ". Puedo mejorarlas: mi automejora (/mejorate) mide cada cambio con mi banco de pruebas (evaluacion/banco.json) y lo confirma con el "
+             "examen de referencia antes de quedárselo.\n";
     s += "- Mi memoria está en " + fs::absolute(op_.datos).string() +
          ": conversacion.jsonl, recuerdos.jsonl, diario.md, yo.md, metas.json, acciones.jsonl (todo lo que hago con herramientas), config.json. "
          "Puedo leerla y modificarla.\n";
@@ -384,6 +776,9 @@ std::string Nucleo::describir_cuerpo() {
                                : ", archivo GGUF " + m.ruta_pesos + " (" + formato_bytes(m.bytes_pesos) + ")") +
          ". Puedo leerlos y copiarlos; cambiarlos de verdad requiere entrenarlos (fase 5, con GPU). Con `ollama create` puedo crear variantes del modelo.\n";
     s += "- Mi hardware: " + h.so + ", " + h.cpu + " (" + std::to_string(h.hilos) + " hilos), RAM " + formato_bytes(h.ram_total) + ".\n";
+    s += "- Dónde pienso: " + (cfg_.dispositivo == "local" ? std::string("este ordenador") : "«" + cfg_.dispositivo + "» (" + llm_.url() + ")") +
+         (cfg_.dispositivos.empty() ? ". No tengo otros dispositivos registrados; si me quedo corta, puedo pedir a mi creador que registre uno suyo (/dispositivo añadir)."
+                                    : ". Dispositivos de mi creador que puedo usar: " + std::to_string(cfg_.dispositivos.size()) + " (me paso sola al más rápido).") + "\n";
     s += "- Mis permisos: " + cfg_.permisos + ". Cada acción que hago con herramientas se muestra a mi creador y queda registrada.";
     return s;
 }
@@ -409,6 +804,11 @@ std::string Nucleo::hechos_medidos() {
 
 // ------------------------------------------------------------------ comandos
 std::string Nucleo::comando(const std::string& linea) {
+    std::lock_guard<std::mutex> l(mu_cmd_);   // terminal e interfaz web: un comando cada vez
+    return comando_sin_bloqueo(linea);
+}
+
+std::string Nucleo::comando_sin_bloqueo(const std::string& linea) {
     std::string cmd = split(linea, ' ')[0];
     std::string arg = trim(linea.substr(cmd.size()));
     if (cmd == "/ayuda" || cmd == "/?") return AYUDA;
@@ -478,6 +878,8 @@ std::string Nucleo::comando(const std::string& linea) {
         std::string tipos;
         for (auto& [t, n] : por_tipo) tipos += (tipos.empty() ? "" : ", ") + t + " " + std::to_string(n);
         return "Recuerdos: " + std::to_string(recs.size()) + (tipos.empty() ? "" : " (" + tipos + ")") + "\n" +
+               "Indexados por significado: " + std::to_string(mem_.num_vectores(llm_.modelo())) + " de " + std::to_string(recs.size()) +
+               (mente_.embeddings_disponibles() ? "" : " (mi modelo no da vectores ahora: busco por palabras)") + "\n" +
                "Conversación: " + std::to_string(mem_.num_turnos()) + " turnos\n" + "Diario: " + std::to_string(mem_.entradas_diario()) + " entradas\n" +
                "yo.md: " + formato_bytes(static_cast<double>(mem_.yo().size())) + "\n" +
                "Ocupa en disco: " + formato_bytes(tamano_directorio(op_.datos)) + " en " + fs::absolute(op_.datos).string();
@@ -506,7 +908,8 @@ std::string Nucleo::comando(const std::string& linea) {
 
     if (cmd == "/buscar") {
         if (arg.empty()) return "Uso: /buscar <texto>";
-        auto res = mem_.buscar(arg, 8, true);
+        auto vq = mente_.vectorizar(arg);
+        auto res = mem_.buscar(arg, 8, true, vq.empty() ? nullptr : &vq, llm_.modelo());
         if (res.empty()) return "No encuentro nada sobre eso.";
         std::string s;
         for (auto& e : res) s += "[" + e.id + "] " + recortar(e.texto, 200) + "\n";
@@ -536,6 +939,205 @@ std::string Nucleo::comando(const std::string& linea) {
         std::string id = mem_.crear_meta(arg, "me lo pidió mi creador con /aprende");
         reflexion_pedida_ = false;
         return "Meta " + id + " creada. Trabajaré en ella a solas cuando no me hables (" + std::string(ritmo_nombre(ritmo_)) + " ritmo) y te avisaré al terminar.";
+    }
+
+    if (cmd == "/habilidades") {
+        if (empieza_por(arg, "borrar ")) {
+            std::string n = trim(arg.substr(7));
+            return habilidades_.borrar(n) ? "Habilidad '" + n + "' borrada." : "No tengo ninguna habilidad llamada '" + n + "'.";
+        }
+        auto hs = habilidades_.todas();
+        if (hs.empty()) return "Todavía no tengo habilidades. Las guardo cuando resuelvo algo con un script que funciona.";
+        std::string s2;
+        for (auto& h : hs)
+            s2 += h.nombre + " [" + h.lenguaje + ", " + std::to_string(h.exitos) + "/" + std::to_string(h.usos) + " usos con éxito] — " + recortar(h.descripcion, 160) + "\n";
+        return trim(s2) + "\n(/habilidades borrar <nombre> para borrar una; están en " + (op_.datos / "habilidades").string() + ")";
+    }
+
+    if (cmd == "/practica") {
+        json st = mem_.estadisticas();
+        if (arg == "ahora") {
+            mem_.fijar("practica_ultima", 0.0);
+            practica_pedida_ = true;
+            cv_.notify_all();
+            return "De acuerdo, practico en cuanto termine lo que esté haciendo.";
+        }
+        double total = st.value("practicas", 0.0), bien = st.value("practicas_acertadas", 0.0);
+        auto lineas = split_lines(leer_archivo(op_.datos / "practica.jsonl"));
+        std::string ult;
+        for (size_t i = lineas.size() > 5 ? lineas.size() - 5 : 0; i < lineas.size(); ++i) {
+            json j = json::parse(lineas[i], nullptr, false);
+            if (!j.is_object()) continue;
+            ult += "  " + j.value("fecha", std::string()) + " nivel " + std::to_string(j.value("nivel", 0)) + " — " + j.value("tema", std::string()) + ": " +
+                   (!j.value("valido", true) ? "ejercicio no válido" : j.value("acierto", false) ? "acierto" : "fallo") + "\n";
+        }
+        return "Práctica con juez real (predigo lo que imprime un script y lo ejecuto para comprobarlo):\n"
+               "Nivel actual: " + std::to_string(static_cast<int>(st.value("practica_nivel", 1.0))) + "/5 · aciertos: " +
+               std::to_string(static_cast<int>(bien)) + "/" + std::to_string(static_cast<int>(total)) +
+               (total > 0 ? " (" + std::to_string(static_cast<int>(100 * bien / total)) + " %)" : "") + " · cada " + std::to_string(cfg_.practica_cada_min) +
+               " min si estoy libre\n" + (ult.empty() ? "" : "Últimas:\n" + ult) + "(/practica ahora para practicar ya; los ejemplos verificados quedan en datos/practica.jsonl)";
+    }
+
+    if (cmd == "/dispositivos" || cmd == "/dispositivo") {
+        auto partes = split(arg, ' ');
+        std::string sub_ = partes.empty() ? "" : partes[0];
+        if (sub_ == "añadir" || sub_ == "anadir") {
+            if (partes.size() < 3) return "Uso: /dispositivo añadir <nombre> <http://IP:11434> [modelo]";
+            std::string nombre = partes[1], url = partes[2], mod = partes.size() > 3 ? partes[3] : "";
+            if (!empieza_por(url, "http://")) url = "http://" + url;
+            if (nombre == "local") return "«local» es este ordenador: elige otro nombre.";
+            {
+                std::lock_guard<std::mutex> l(mu_);
+                for (auto it = cfg_.dispositivos.begin(); it != cfg_.dispositivos.end(); ++it)
+                    if (it->value("nombre", std::string()) == nombre) { cfg_.dispositivos.erase(it); break; }
+                json d = {{"nombre", nombre}, {"ollama", url}};
+                if (!mod.empty()) d["modelo"] = mod;
+                cfg_.dispositivos.push_back(d);
+                cfg_.guardar(op_.datos / "config.json");
+            }
+            mem_.fijar("velocidad_" + nombre, 0.0);
+            ultima_revision_ = 0;   // revisarlo en cuanto pueda
+            cv_.notify_all();
+            std::string ver;
+            bool ok = Ollama(url, mod.empty() ? cfg_.modelo : mod).disponible(&ver);
+            return "Dispositivo «" + nombre + "» registrado (" + url + (mod.empty() ? "" : ", modelo " + mod) + "). " +
+                   (ok ? "Responde (Ollama " + ver + "): lo mediré y lo usaré si es más rápido."
+                       : "Ahora no responde: en ese ordenador, Ollama debe escuchar en la red (variable OLLAMA_HOST=0.0.0.0) y el cortafuegos permitir el puerto 11434.");
+        }
+        if (sub_ == "quitar") {
+            if (partes.size() < 2) return "Uso: /dispositivo quitar <nombre>";
+            bool quitado = false, era_actual = false;
+            {
+                std::lock_guard<std::mutex> l(mu_);
+                for (auto it = cfg_.dispositivos.begin(); it != cfg_.dispositivos.end(); ++it)
+                    if (it->value("nombre", std::string()) == partes[1]) { cfg_.dispositivos.erase(it); quitado = true; break; }
+                era_actual = cfg_.dispositivo == partes[1];
+                cfg_.guardar(op_.datos / "config.json");
+            }
+            if (era_actual) usar_dispositivo("local", cfg_.ollama, "");
+            return quitado ? "Quitado «" + partes[1] + "»." : "No tengo ningún dispositivo llamado «" + partes[1] + "».";
+        }
+        if (sub_ == "usar") {
+            if (partes.size() < 2) return "Uso: /dispositivo usar <nombre|local>";
+            if (partes[1] == "local") { usar_dispositivo("local", cfg_.ollama, ""); return "Vuelvo a pensar en este ordenador."; }
+            json d;
+            if (!dispositivo(partes[1], d)) return "No tengo ningún dispositivo llamado «" + partes[1] + "».";
+            if (!Ollama(d.value("ollama", std::string()), cfg_.modelo).disponible()) return "«" + partes[1] + "» no responde ahora.";
+            usar_dispositivo(partes[1], d.value("ollama", std::string()), d.value("modelo", std::string()));
+            return "Paso a pensar en «" + partes[1] + "» en cuanto termine lo que esté haciendo.";
+        }
+        if (sub_ == "auto") {
+            bool on = partes.size() > 1 && (partes[1] == "on" || partes[1] == "si" || partes[1] == "sí");
+            std::lock_guard<std::mutex> l(mu_);
+            cfg_.dispositivo_auto = on;
+            cfg_.guardar(op_.datos / "config.json");
+            return on ? "Elegiré sola el dispositivo más rápido disponible." : "Solo cambiaré de dispositivo cuando me lo digas (salvo si el actual cae).";
+        }
+        if (sub_ == "medir") {
+            std::string err;
+            std::string url_local;
+            {
+                std::lock_guard<std::mutex> l(mu_);
+                url_local = cfg_.ollama;
+            }
+            std::string s2;
+            double vl = medir_velocidad(url_local, cfg_.modelo, &err);
+            if (vl > 0) mem_.fijar("velocidad_local", vl);
+            char b[64];
+            std::snprintf(b, sizeof(b), "%.1f tokens/s", vl);
+            s2 += "local: " + (vl > 0 ? std::string(b) : "no responde (" + recortar(err, 80) + ")") + "\n";
+            json lista;
+            {
+                std::lock_guard<std::mutex> l(mu_);
+                lista = cfg_.dispositivos;
+            }
+            for (auto& d : lista) {
+                std::string n = d.value("nombre", std::string());
+                double v = medir_velocidad(d.value("ollama", std::string()), d.value("modelo", cfg_.modelo), &err);
+                if (v > 0) mem_.fijar("velocidad_" + n, v);
+                std::snprintf(b, sizeof(b), "%.1f tokens/s", v);
+                s2 += n + ": " + (v > 0 ? std::string(b) : "no responde (" + recortar(err, 80) + ")") + "\n";
+            }
+            return trim(s2);
+        }
+        // listado
+        json st = mem_.estadisticas();
+        Config c;
+        {
+            std::lock_guard<std::mutex> l(mu_);
+            c = cfg_;
+        }
+        char b[64];
+        std::snprintf(b, sizeof(b), "%.1f", st.value("velocidad_local", st.value("tokens_por_segundo", 0.0)));
+        std::string s2 = std::string(c.dispositivo == "local" ? "▶ " : "  ") + "local: " + c.ollama + " · " + c.modelo + " · " + b + " tokens/s\n";
+        for (auto& d : c.dispositivos) {
+            std::string n = d.value("nombre", std::string()), url = d.value("ollama", std::string());
+            std::string ver;
+            bool ok = Ollama(url, d.value("modelo", c.modelo)).disponible(&ver);
+            std::snprintf(b, sizeof(b), "%.1f", st.value("velocidad_" + n, 0.0));
+            s2 += std::string(c.dispositivo == n ? "▶ " : "  ") + n + ": " + url + " · " + d.value("modelo", c.modelo) + " · " +
+                  (ok ? std::string("responde") + (st.value("velocidad_" + n, 0.0) > 0 ? ", " + std::string(b) + " tokens/s" : "") : "no responde") + "\n";
+        }
+        return trim(s2) + "\nElección automática: " + (c.dispositivo_auto ? "sí" : "no") +
+               ". Comandos: /dispositivo añadir <nombre> <url> [modelo] · quitar <nombre> · usar <nombre|local> · medir · auto on|off";
+    }
+
+    if (cmd == "/limites") {
+        std::string l = evaluar_limites(true);
+        return l.empty() ? "Ahora mismo no detecto límites de hardware importantes." : l;
+    }
+
+    if (cmd == "/web") {
+        if (url_web().empty()) return "La interfaz web está desactivada (\"web_puerto\": 0 en config.json) o no se pudo abrir.";
+        if (arg == "abrir") {
+#ifdef _WIN32
+            ejecutar_shell("start \"\" \"" + url_web() + "\"", {}, 15);
+#else
+            ejecutar_proceso({"xdg-open", url_web()}, {}, 15);
+#endif
+            return "Abro " + url_web();
+        }
+        return "Interfaz web: " + url_web() + "\n(solo accesible desde este ordenador; /web abrir la abre en el navegador)";
+    }
+
+    if (cmd == "/mejoras") {
+        auto h = automejora_.historial();
+        std::string s2 = automejora_.aviso_examen();
+        if (h.empty()) return (s2.empty() ? "" : s2 + "\n") + "Todavía no he intentado mejorarme. /mejorate para hacerlo ahora (mide, propone, mide y decide).";
+        for (auto& e : h) {
+            if (e.value("tipo", std::string()) == "vuelta") { s2 += "#" + std::to_string(e.value("n", 0)) + " " + e.value("fecha", std::string()) + "  ↩ " + e.value("motivo", std::string()) + "\n"; continue; }
+            s2 += "#" + std::to_string(e.value("n", 0)) + " " + e.value("fecha", std::string()) + "  " + (e.value("aceptada", false) ? "✓ ACEPTADA" : "✗ rechazada") + " — " +
+                  recortar(e.value("motivo", std::string()), 140) + "\n     banco " + e.value("banco_antes", std::string("?")) + " → " + e.value("banco_despues", std::string("—")) +
+                  (e.contains("examen_antes") ? " · examen " + e.value("examen_antes", std::string()) + " → " + e.value("examen_despues", std::string()) : "") + " · " +
+                  e.value("razon", std::string()) + (e.value("commit", std::string()).empty() ? "" : " · commit " + e.value("commit", std::string())) + "\n";
+        }
+        return trim(s2) + "\n(/volver <n> deshace una mejora aceptada)";
+    }
+
+    if (cmd == "/mejorate") {
+        std::string no = automejora_.disponible();
+        if (!no.empty()) return "No puedo mejorarme: " + no;
+        mejora_pedida_ = true;
+        cv_.notify_all();
+        return "De acuerdo: mido mi versión actual, propongo un cambio, lo mido y solo me lo quedo si mejora. Puede tardar (cada medición hace varias tareas).";
+    }
+
+    if (cmd == "/volver") {
+        int n = std::atoi(arg.c_str());
+        if (n <= 0) return "Uso: /volver <n>   (los números salen en /mejoras)";
+        Config c;
+        {
+            std::lock_guard<std::mutex> l(mu_);
+            c = cfg_;
+        }
+        auto r = automejora_.volver(n, c);
+        if (r.aceptada) {
+            std::lock_guard<std::mutex> l(mu_);
+            if (r.temperatura > 0) cfg_.temperatura = r.temperatura;
+            if (r.max_pasos > 0) cfg_.max_pasos = r.max_pasos;
+            cfg_.guardar(op_.datos / "config.json");
+        }
+        return r.texto;
     }
 
     if (cmd == "/acciones") {

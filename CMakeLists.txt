@@ -13,7 +13,7 @@ endif()
 find_package(Threads REQUIRED)
 
 add_library(orion_core STATIC
-  src/util.cpp src/http.cpp src/ollama.cpp src/memoria.cpp src/sistema.cpp src/mente.cpp src/nucleo.cpp src/herramientas.cpp)
+  src/util.cpp src/http.cpp src/ollama.cpp src/memoria.cpp src/sistema.cpp src/mente.cpp src/nucleo.cpp src/herramientas.cpp src/habilidades.cpp src/evaluacion.cpp src/automejora.cpp)
 target_include_directories(orion_core PUBLIC include third_party)
 target_link_libraries(orion_core PUBLIC Threads::Threads)
 if(WIN32)
@@ -37,7 +37,8 @@ if(ORION_TESTS)
   enable_testing()
   add_executable(orion_tests tests/test_orion.cpp)
   target_link_libraries(orion_tests PRIVATE orion_core)
-  target_compile_definitions(orion_tests PRIVATE ORION_EXE="$<TARGET_FILE:orion>" GUARDIAN_EXE="$<TARGET_FILE:guardian>")
+  target_compile_definitions(orion_tests PRIVATE ORION_EXE="$<TARGET_FILE:orion>" GUARDIAN_EXE="$<TARGET_FILE:guardian>"
+                             ORION_REPO="${CMAKE_SOURCE_DIR}")
   add_dependencies(orion_tests orion guardian)
   add_test(NAME orion_tests COMMAND orion_tests)
 endif()

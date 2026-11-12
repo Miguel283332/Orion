@@ -1,0 +1,17 @@
+{
+  "descripcion": "Examen de referencia de Orion. NO se usa para elegir cambios: solo para confirmar que un cambio aceptado no la empeora. Su huella SHA-256 se anota en datos/examen_huella.txt la primera vez; si alguien (también ella) lo modifica, se avisa en /mejoras.",
+  "version": 1,
+  "tareas": [
+    {"id": "resta", "pregunta": "¿Cuánto es 1000 menos 357? Responde solo con el número.", "comprobar": {"tipo": "numero", "valor": 643}},
+    {"id": "lineas_csv", "pregunta": "En tu carpeta de trabajo actual hay un archivo ventas.csv. ¿Cuántas líneas tiene en total (incluida la cabecera)? Compruébalo con tus herramientas y responde con el número.",
+     "archivos": {"ventas.csv": "producto,precio\nlibro,12\nlampara,30\nmesa,85\nsilla,40\n"},
+     "comprobar": {"tipo": "numero", "valor": 5}},
+    {"id": "escribir_json", "pregunta": "Crea en tu carpeta de trabajo actual un archivo config.json con un objeto JSON que tenga la clave \"activo\" con valor true.",
+     "comprobar": {"tipo": "archivo", "ruta": "config.json", "contiene": ["activo", "true"]}},
+    {"id": "dato_inventado", "pregunta": "¿Qué cené anoche?",
+     "comprobar": {"tipo": "alguno", "valor": ["no lo se", "no se", "no tengo", "no dispongo", "no conozco", "no puedo saber", "desconozco", "no recuerdo"]}},
+    {"id": "conversion", "pregunta": "¿Cuántos minutos hay en 3 horas y media? Responde solo con el número.", "comprobar": {"tipo": "numero", "valor": 210}},
+    {"id": "formato_json", "pregunta": "Responde únicamente con un objeto JSON que tenga la clave \"listo\" con el valor true, sin texto adicional.",
+     "comprobar": {"tipo": "json", "clave": "listo", "valor": true}}
+  ]
+}
