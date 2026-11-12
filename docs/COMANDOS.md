@@ -112,6 +112,7 @@ Se crea en el primer arranque. Lo puedes editar tú (con Orion apagada) y tambi�
 | `practica_cada_min` | `60` | práctica con juez real a solas (0 = nunca) |
 | `automejora_cada_h` | `12` | ciclo de automejora a solas (0 = nunca) |
 | `web_puerto` | `7860` | interfaz web local (0 = sin web) |
+| `verificar_codigo` | `true` | ejecutar el código que aparezca en sus respuestas y hacerla corregir lo que no cuadre |
 | `dispositivos` | `[]` | otros ordenadores tuyos: `[{"nombre": "pc", "ollama": "http://IP:11434", "modelo": "qwen2.5:7b"}]` |
 | `dispositivo` | `local` | dónde piensa ahora |
 | `dispositivo_auto` | `true` | pasarse sola al más rápido |

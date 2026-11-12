@@ -21,6 +21,7 @@ struct Config {
     std::string cmake = "cmake";        // ruta a cmake (para compilarse a sí misma)
     int practica_cada_min = 60;         // práctica con juez real a solas (0 = nunca)
     double automejora_cada_h = 12;      // ciclo de automejora medida a solas (0 = nunca)
+    bool verificar_codigo = true;       // ejecutar el código que aparezca en sus respuestas y hacerla corregir lo que no cuadre
     int web_puerto = 7860;              // interfaz web local (0 = desactivada)
     json dispositivos = json::array();  // otros ordenadores TUYOS con Ollama: [{"nombre","ollama","modelo"}]
     std::string dispositivo = "local";  // en cuál piensa ahora
@@ -94,6 +95,8 @@ private:
     Memoria& mem_;
     Ollama& llm_;
     std::string estado_actual_;
+    void verificar_codigo_de_respuesta(json& mensajes, ResultadoGeneracion& r, const Trozo& por_trozo, const std::atomic<bool>* cancelar,
+                                       Herramientas* h);
     std::string cuerpo_;
     bool sin_herramientas_ = false;   // el modelo no admite herramientas
     std::atomic<bool> embed_ok_{true};
@@ -104,6 +107,7 @@ private:
 
 std::string extraer_json_objeto(const std::string& texto);   // primer objeto {...} equilibrado
 // Llamadas a herramientas escritas como texto (algunos modelos pequeños no usan el formato nativo).
+json bloques_de_codigo(const std::string& texto);   // [{"lenguaje", "codigo"}] de los bloques ``` de un texto
 json llamadas_en_texto(const std::string& texto, const std::vector<std::string>& nombres);
 
 }  // namespace orion

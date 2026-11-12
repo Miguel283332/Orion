@@ -70,6 +70,8 @@ const std::vector<std::pair<std::string, std::string>>& Herramientas::interprete
         for (const char* p : {"python3", "python", "py"})
             if (existe({p, "--version"}, "python")) { v.push_back({"python", p}); break; }
         if (existe({"node", "--version"}, "v")) v.push_back({"javascript", "node"});
+        for (const char* cc : {"g++", "clang++"})   // C++: se compila y se ejecuta
+            if (existe({cc, "--version"}, "")) { v.push_back({"cpp", cc}); break; }
 #ifdef _WIN32
         v.push_back({"powershell", "powershell"});
         v.push_back({"cmd", "cmd"});
@@ -194,6 +196,7 @@ std::string Herramientas::usar_sin_registro(const std::string& nombre, const jso
         if (leng == "py" || leng == "python3") leng = "python";
         if (leng == "js" || leng == "node") leng = "javascript";
         if (leng == "bash" || leng == "shell") leng = "sh";
+        if (leng == "c++" || leng == "cxx" || leng == "cc") leng = "cpp";
         std::string codigo = arg_str(a, "codigo");
         if (trim(codigo).empty()) return "Falta 'codigo'.";
         if (empieza_por(trim(codigo), "```")) {   // quitar una valla de markdown si la puso
@@ -209,7 +212,7 @@ std::string Herramientas::usar_sin_registro(const std::string& nombre, const jso
             if (l == leng) interprete = ruta;
         }
         if (interprete.empty()) return "El lenguaje '" + leng + "' no está disponible en este ordenador. Disponibles: " + disponibles + ".";
-        static const std::pair<const char*, const char*> ext[] = {{"python", ".py"}, {"javascript", ".js"}, {"powershell", ".ps1"}, {"cmd", ".cmd"}, {"sh", ".sh"}};
+        static const std::pair<const char*, const char*> ext[] = {{"python", ".py"}, {"javascript", ".js"}, {"powershell", ".ps1"}, {"cmd", ".cmd"}, {"sh", ".sh"}, {"cpp", ".cpp"}};
         std::string e = ".txt";
         for (auto& [l, x] : ext) if (leng == l) e = x;
         fs::path dir = c_.datos / "codigo";
@@ -221,7 +224,18 @@ std::string Herramientas::usar_sin_registro(const std::string& nombre, const jso
         escribir_atomico(archivo, codigo + "\n");
         int seg = static_cast<int>(std::clamp<long long>(arg_int(a, "segundos", 60), 1, 3600));
         std::vector<std::string> args;
-        if (leng == "powershell") args = {"powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", archivo.string()};
+        if (leng == "cpp") {   // compilar primero
+#ifdef _WIN32
+            fs::path exe = fs::absolute(dir / "programa.exe");
+#else
+            fs::path exe = fs::absolute(dir / "programa");
+#endif
+            std::error_code ec;
+            fs::remove(exe, ec);
+            auto comp = ejecutar_proceso({interprete, "-std=c++17", "-O1", archivo.string(), "-o", exe.string()}, dir, 180);
+            if (comp.codigo != 0) return "código de salida: " + std::to_string(comp.codigo) + " (NO COMPILA: corrige el programa)\nerrores:\n" + recortar(comp.salida, 2500);
+            args = {exe.string()};
+        } else if (leng == "powershell") args = {"powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", archivo.string()};
         else if (leng == "cmd") args = {"cmd", "/d", "/c", archivo.string()};
         else args = {interprete, archivo.string()};
         auto res = ejecutar_proceso(args, dir, seg);

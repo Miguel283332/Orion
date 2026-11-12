@@ -8,7 +8,7 @@ El modelo decide cuándo usarlas (llamadas a herramientas nativas de Ollama; `qw
 
 | Herramienta | Qué hace | Permiso |
 |---|---|---|
-| `ejecutar_codigo` | ejecutar un **programa completo** (Python si está instalado, PowerShell, cmd; en Linux sh; Node si está) para calcular o comprobar algo | total |
+| `ejecutar_codigo` | ejecutar un **programa completo** (Python si está instalado, **C++** si hay g++ o clang++, PowerShell, cmd; en Linux sh; Node si está) para calcular o comprobar algo | total |
 | `ejecutar_comando` | cualquier orden en `cmd.exe` (y PowerShell con `powershell -Command`), con tiempo máximo | total |
 | `escribir_archivo` | escribir o añadir a cualquier archivo | total |
 | `guardar_habilidad` · `usar_habilidad` | guardar un script que funciona (se prueba antes) y volver a usarlo | total |
@@ -25,6 +25,15 @@ Además "conoce su cuerpo": en cada conversación recibe una sección **Mi cuerp
 - dónde está su **memoria** y qué archivos la forman;
 - dónde están sus **pesos**: el archivo GGUF que usa Ollama, con su tamaño, número de parámetros y cuantización;
 - su **hardware** y sus **permisos**.
+
+## Comprobación automática del código de sus respuestas
+
+Los modelos pequeños a menudo escriben "ejecutando…" y se **inventan** la salida de un programa. Por eso, si una respuesta suya trae un bloque de código ejecutable:
+1. Orion lo **ejecuta de verdad** (verás `⚙ ejecutar_codigo`);
+2. le enseña la **salida real**;
+3. le pide que corrija lo que no cuadre.
+
+La corrección aparece a continuación y queda en la conversación como "[Comprobado ejecutando el código]". Se desactiva con `"verificar_codigo": false` en `config.json`.
 
 ## Qué hace a solas, sin que se lo pidas
 

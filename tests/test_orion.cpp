@@ -108,11 +108,19 @@ struct OllamaSimulado {
                 return llamar("ejecutar_comando", {{"comando", "echo hola-orion"}});
             } else if (contiene(ultimo, "reiníciate")) {
                 return llamar("reiniciarme", json::object());
+            } else if (contiene(ultimo, "calcula con código")) {
+#ifdef _WIN32
+                texto = "Ejecutando el código:\n```powershell\nWrite-Output (2+2)\n```\nEl resultado es 5.";
+#else
+                texto = "Ejecutando el código:\n```sh\necho $((2+2))\n```\nEl resultado es 5.";
+#endif
             } else if (contiene(ultimo, "texto-herramienta")) {
                 texto = "<tool_call>{\"name\": \"guardar_recuerdo\", \"arguments\": {\"texto\": \"Le gustan los agujeros negros.\"}}</tool_call>";
             }
         }
         if (!texto.empty()) {
+        } else if (contiene(ultimo, "salida REAL")) {
+            texto = contiene(ultimo, "4") ? "Corrijo: el resultado real es 4, no 5." : "Coincide.";
         } else if (contiene(todo, "Propón UNA mejora")) {
             std::string extra = contiene(todo, "RESPONDE CON NÚMEROS") ? "SOLO NÚMEROS." : "RESPONDE CON NÚMEROS cuando te pidan un cálculo.";
             std::string base = Mente::reglas_por_defecto();
@@ -451,6 +459,13 @@ static void t_herramientas() {
     CHECK(contiene(h.usar("ejecutar_codigo", {{"lenguaje", "sh"}, {"codigo", "echo $((6*7))"}}), "42"), "ejecutar_codigo: sh");
 #endif
     CHECK(contiene(h.usar("ejecutar_codigo", {{"lenguaje", "cobol"}, {"codigo", "x"}}), "no está disponible"), "ejecutar_codigo: lenguaje no disponible");
+    bool hay_cpp = false;
+    for (auto& [l, ruta] : Herramientas::interpretes()) hay_cpp |= l == "cpp";
+    if (hay_cpp) {
+        CHECK(contiene(h.usar("ejecutar_codigo", {{"lenguaje", "c++"}, {"codigo", "#include <iostream>\nint main() { std::cout << 6 * 7 << std::endl; }"}}), "42"),
+              "ejecutar_codigo: C++ (compila y ejecuta)");
+        CHECK(contiene(h.usar("ejecutar_codigo", {{"lenguaje", "cpp"}, {"codigo", "int main() { return x; }"}}), "NO COMPILA"), "ejecutar_codigo: C++ que no compila");
+    }
     CHECK(contiene(h.usar("ejecutar_comando", {{"comando", "echo hola-orion"}}), "hola-orion"), "ejecutar_comando");
     CHECK(contiene(h.usar("ejecutar_comando", {{"comando", "exit 3"}}), "código de salida: 3"), "código de salida");
     fs::path f = d.p / "sub" / "nota.txt";
@@ -464,7 +479,7 @@ static void t_herramientas() {
     CHECK(contiene(h.usar("inventada", json::object()), "No tengo permiso"), "herramienta desconocida");
     CHECK(std::any_of(avisos.begin(), avisos.end(), [](const std::string& a) { return contiene(a, "⚙ ejecutar_comando: echo hola-orion"); }),
           "muestra lo que hace");
-    CHECK(split_lines(leer_archivo(d.p / "acciones.jsonl")).size() == 10 + (hay_python ? 3 : 0) + 2, "registra cada acción");
+    CHECK(split_lines(leer_archivo(d.p / "acciones.jsonl")).size() == 10 + (hay_python ? 3 : 0) + 2 + (hay_cpp ? 2 : 0), "registra cada acción");
     c.permisos = "lectura";
     Herramientas lect(c);
     CHECK(lect.definiciones().size() == 7 && contiene(lect.usar("ejecutar_comando", {{"comando", "echo x"}}), "No tengo permiso"), "permisos de lectura");
@@ -510,6 +525,11 @@ static void t_agente() {
     CHECK(pet.contains("tools") && pet["messages"].back()["role"] == "tool", "el resultado vuelve al modelo como mensaje 'tool'");
     CHECK(contiene(pet["messages"][0]["content"].get<std::string>(), "## Mi cuerpo") && contiene(pet["messages"][0]["content"].get<std::string>(), "Mis pesos"),
           "sabe dónde están su código, su memoria y sus pesos");
+    n.entrada("calcula con código cuánto es 2+2");
+    n.esperar_inactividad(15);
+    CHECK(contiene(cap.ver(), "⚙ ejecutar_codigo") && contiene(cap.ver(), "Corrijo: el resultado real es 4"),
+          "comprobación automática: ejecuta el código de su respuesta y corrige el resultado inventado");
+    CHECK(contiene(n.memoria().ultimos_turnos(1)[0].texto, "[Comprobado ejecutando el código]"), "la corrección queda en la conversación");
     n.entrada("usa texto-herramienta");
     n.esperar_inactividad(15);
     CHECK(n.memoria().recuerdos().size() == 1, "entiende llamadas escritas como texto (<tool_call>)");

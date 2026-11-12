@@ -85,7 +85,7 @@ Orion/
 
 ## Estado real (qué está comprobado y qué no)
 
-**Comprobado** con **214 comprobaciones** automáticas y un Ollama simulado:
+**Comprobado** con **219 comprobaciones** automáticas y un Ollama simulado:
 - memoria por significado (encuentra "física" al preguntar por "ciencia") y resúmenes;
 - habilidades que solo se guardan si funcionan; práctica que ejecuta, compara, ajusta la dificultad y saca lecciones;
 - metas por pasos;

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <ctime>
+#include <set>
 #include <stdexcept>
 #include <vector>
 
@@ -25,6 +26,7 @@ Config Config::cargar(const fs::path& archivo) {
         c.practica_cada_min = j.value("practica_cada_min", c.practica_cada_min);
         c.automejora_cada_h = j.value("automejora_cada_h", c.automejora_cada_h);
         c.web_puerto = j.value("web_puerto", c.web_puerto);
+        c.verificar_codigo = j.value("verificar_codigo", c.verificar_codigo);
         if (j.contains("dispositivos") && j["dispositivos"].is_array()) c.dispositivos = j["dispositivos"];
         c.dispositivo = j.value("dispositivo", c.dispositivo);
         c.dispositivo_auto = j.value("dispositivo_auto", c.dispositivo_auto);
@@ -38,7 +40,7 @@ Config Config::cargar(const fs::path& archivo) {
 json Config::a_json() const {
     return {{"config_version", 2}, {"modelo", modelo}, {"ollama", ollama}, {"ritmo", ritmo}, {"num_ctx", num_ctx}, {"num_predict", num_predict}, {"temperatura", temperatura},
             {"permisos", permisos}, {"max_pasos", max_pasos}, {"cmake", cmake},
-            {"practica_cada_min", practica_cada_min}, {"automejora_cada_h", automejora_cada_h}, {"web_puerto", web_puerto},
+            {"practica_cada_min", practica_cada_min}, {"automejora_cada_h", automejora_cada_h}, {"web_puerto", web_puerto}, {"verificar_codigo", verificar_codigo},
             {"dispositivos", dispositivos}, {"dispositivo", dispositivo}, {"dispositivo_auto", dispositivo_auto}};
 }
 
@@ -116,7 +118,7 @@ const char* REGLAS_POR_DEFECTO =
         "para responder bien o para hacer lo que te piden, no para saludar ni para charlar. Cuando una herramienta falle, lee el error y corrige. "
         "Antes de algo irreversible (borrar, sobrescribir, instalar), di qué vas a hacer. Si te piden algo que no sabes hacer y requiere estudiar, "
         "dilo con sinceridad (\"no lo sé, voy a aprender\"), crea una meta con crear_meta_de_aprendizaje y explica que volverás con ello.\n"
-        "Cálculos y comprobaciones: si una pregunta se puede calcular o comprobar, escribe un programa completo y ejecútalo con ejecutar_codigo (no pongas código de Python en ejecutar_comando). Si la ejecución contradice tu razonamiento, confía en la ejecución, corrige y dilo. En tu respuesta da el resultado y una explicación breve; no copies el código salvo que te lo pidan.\n\n";
+        "Cálculos y comprobaciones: si una pregunta se puede calcular o comprobar, escribe un programa completo y ejecútalo con ejecutar_codigo (no pongas código de Python en ejecutar_comando). Si la ejecución contradice tu razonamiento, confía en la ejecución, corrige y dilo. En tu respuesta da el resultado y una explicación breve; no copies el código salvo que te lo pidan. Nunca escribas «ejecutando…» ni inventes la salida de un programa: solo es real lo que devuelve ejecutar_codigo; léelo y úsalo tal cual.\n\n";
 
 std::string Mente::reglas_por_defecto() { return trim(REGLAS_POR_DEFECTO); }
 
@@ -243,6 +245,7 @@ ResultadoGeneracion Mente::responder(const std::string& mensaje, const Trozo& po
     op.num_predict = cfg_.num_predict;
     op.semilla = cfg_.semilla;
     auto r = con_herramientas(mensajes, op, por_trozo, cancelar, h, cfg_.max_pasos);
+    if (r.ok && !r.cancelada && h && cfg_.verificar_codigo) verificar_codigo_de_respuesta(mensajes, r, por_trozo, cancelar, h);
     mem_.anadir_turno("usuario", mensaje);
     if (!trim(r.texto).empty()) mem_.anadir_turno("orion", trim(r.texto) + (r.cancelada ? " [interrumpido]" : ""));
     return r;
@@ -320,6 +323,52 @@ Mente::AvanceMeta Mente::trabajar_en_meta(const Meta& meta, Herramientas* h, con
     av.terminada = true;
     av.texto = trim(r.texto);
     return av;
+}
+
+// Un modelo pequeño a menudo escribe «ejecutando…» y se inventa la salida. Si su respuesta trae un bloque de código
+// ejecutable, se ejecuta de verdad, se le enseña la salida REAL y se le pide que corrija lo que no cuadre.
+json bloques_de_codigo(const std::string& t) {
+    json v = json::array();
+    size_t p = 0;
+    while ((p = t.find("```", p)) != std::string::npos) {
+        size_t fin_linea = t.find('\n', p);
+        if (fin_linea == std::string::npos) break;
+        std::string leng = minusculas_sin_acentos(trim(t.substr(p + 3, fin_linea - p - 3)));
+        size_t cierre = t.find("```", fin_linea);
+        if (cierre == std::string::npos) break;
+        v.push_back({{"lenguaje", leng}, {"codigo", t.substr(fin_linea + 1, cierre - fin_linea - 1)}});
+        p = cierre + 3;
+    }
+    return v;
+}
+
+void Mente::verificar_codigo_de_respuesta(json& mensajes, ResultadoGeneracion& r, const Trozo& por_trozo, const std::atomic<bool>* cancelar, Herramientas* h) {
+    auto nombres = Herramientas::nombres(cfg_.permisos);
+    if (std::find(nombres.begin(), nombres.end(), "ejecutar_codigo") == nombres.end()) return;
+    static const std::set<std::string> ejecutables = {"python", "py", "python3", "sh", "bash", "javascript", "js", "node", "powershell", "cpp", "c++"};
+    json elegido;
+    for (auto& b : bloques_de_codigo(r.texto)) {   // el último bloque ejecutable que imprima algo
+        std::string l = b["lenguaje"], c = b["codigo"];
+        bool imprime = contiene(c, "print") || contiene(c, "echo") || contiene(c, "cout") || contiene(c, "console.log") || contiene(c, "Write-");
+        if (ejecutables.count(l) && imprime) elegido = b;
+    }
+    if (elegido.is_null()) return;
+    std::string salida = h->usar("ejecutar_codigo", {{"lenguaje", elegido["lenguaje"]}, {"codigo", elegido["codigo"]}, {"segundos", 30}});
+    if (contiene(salida, "no está disponible") || (cancelar && cancelar->load())) return;
+    mensajes.push_back({{"role", "assistant"}, {"content", r.texto}});
+    mensajes.push_back({{"role", "user"},
+                        {"content", "(Comprobación automática) He ejecutado de verdad el último bloque de código de tu respuesta. Esta es la salida REAL:\n" +
+                                        recortar(salida, 1500) +
+                                        "\nCompárala con lo que dijiste. Si algo no coincide (resultados, conclusiones), corrígelo ahora en 2-4 frases y da la "
+                                        "respuesta correcta según esta salida. Si coincide, confírmalo en una frase. No repitas el código."}});
+    OpcionesGeneracion op;
+    op.temperatura = 0.2;
+    op.num_ctx = cfg_.num_ctx;
+    op.num_predict = 300;
+    auto c = generar(mensajes, op, por_trozo, cancelar);
+    r.tokens_generados += c.tokens_generados;
+    if (c.ok && !trim(c.texto).empty()) r.texto = trim(r.texto) + "\n\n[Comprobado ejecutando el código] " + trim(c.texto);
+    if (c.cancelada) r.cancelada = true;
 }
 
 bool Mente::hay_que_practicar(double cada_s) const {
