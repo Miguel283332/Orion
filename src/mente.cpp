@@ -17,6 +17,7 @@ Config Config::cargar(const fs::path& archivo) {
         c.ritmo = j.value("ritmo", c.ritmo);
         c.num_ctx = j.value("num_ctx", c.num_ctx);
         c.num_predict = j.value("num_predict", c.num_predict);
+        if (j.value("config_version", 1) < 2 && c.num_predict == 512) c.num_predict = 1024;   // 512 cortaba las respuestas con herramientas
         c.temperatura = j.value("temperatura", c.temperatura);
         c.permisos = j.value("permisos", c.permisos);
         c.max_pasos = j.value("max_pasos", c.max_pasos);
@@ -27,6 +28,7 @@ Config Config::cargar(const fs::path& archivo) {
         if (j.contains("dispositivos") && j["dispositivos"].is_array()) c.dispositivos = j["dispositivos"];
         c.dispositivo = j.value("dispositivo", c.dispositivo);
         c.dispositivo_auto = j.value("dispositivo_auto", c.dispositivo_auto);
+        if (j.value("config_version", 1) < 2) c.guardar(archivo);   // actualizar el archivo al formato nuevo
     } else {
         c.guardar(archivo);
     }
@@ -34,7 +36,7 @@ Config Config::cargar(const fs::path& archivo) {
 }
 
 json Config::a_json() const {
-    return {{"modelo", modelo}, {"ollama", ollama}, {"ritmo", ritmo}, {"num_ctx", num_ctx}, {"num_predict", num_predict}, {"temperatura", temperatura},
+    return {{"config_version", 2}, {"modelo", modelo}, {"ollama", ollama}, {"ritmo", ritmo}, {"num_ctx", num_ctx}, {"num_predict", num_predict}, {"temperatura", temperatura},
             {"permisos", permisos}, {"max_pasos", max_pasos}, {"cmake", cmake},
             {"practica_cada_min", practica_cada_min}, {"automejora_cada_h", automejora_cada_h}, {"web_puerto", web_puerto},
             {"dispositivos", dispositivos}, {"dispositivo", dispositivo}, {"dispositivo_auto", dispositivo_auto}};
@@ -113,7 +115,8 @@ const char* REGLAS_POR_DEFECTO =
         "Herramientas: tienes acceso total al ordenador (comandos, archivos, internet), a tu código y a tu memoria. Úsalas cuando hagan falta "
         "para responder bien o para hacer lo que te piden, no para saludar ni para charlar. Cuando una herramienta falle, lee el error y corrige. "
         "Antes de algo irreversible (borrar, sobrescribir, instalar), di qué vas a hacer. Si te piden algo que no sabes hacer y requiere estudiar, "
-        "dilo con sinceridad (\"no lo sé, voy a aprender\"), crea una meta con crear_meta_de_aprendizaje y explica que volverás con ello.\n\n";
+        "dilo con sinceridad (\"no lo sé, voy a aprender\"), crea una meta con crear_meta_de_aprendizaje y explica que volverás con ello.\n"
+        "Cálculos y comprobaciones: si una pregunta se puede calcular o comprobar, escribe un programa completo y ejecútalo con ejecutar_codigo (no pongas código de Python en ejecutar_comando). Si la ejecución contradice tu razonamiento, confía en la ejecución, corrige y dilo. En tu respuesta da el resultado y una explicación breve; no copies el código salvo que te lo pidan.\n\n";
 
 std::string Mente::reglas_por_defecto() { return trim(REGLAS_POR_DEFECTO); }
 

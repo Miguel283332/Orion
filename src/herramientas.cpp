@@ -52,22 +52,52 @@ Herramientas::Herramientas(ContextoHerramientas c) : c_(std::move(c)) {}
 std::vector<std::string> Herramientas::nombres(const std::string& permisos) {
     std::vector<std::string> memoria = {"guardar_recuerdo", "buscar_en_memoria", "crear_meta_de_aprendizaje"};
     std::vector<std::string> lectura = {"leer_archivo", "listar_directorio", "buscar_en_internet", "leer_pagina_web"};
-    std::vector<std::string> total = {"ejecutar_comando", "escribir_archivo", "guardar_habilidad", "usar_habilidad", "compilar_nueva_version", "reiniciarme"};
+    std::vector<std::string> total = {"ejecutar_codigo", "ejecutar_comando", "escribir_archivo", "guardar_habilidad", "usar_habilidad", "compilar_nueva_version", "reiniciarme"};
     std::vector<std::string> r = memoria;
     if (permisos == "lectura" || permisos == "total") r.insert(r.end(), lectura.begin(), lectura.end());
     if (permisos == "total") r.insert(r.end(), total.begin(), total.end());
     return r;
 }
 
+const std::vector<std::pair<std::string, std::string>>& Herramientas::interpretes() {
+    static const std::vector<std::pair<std::string, std::string>> lista = [] {
+        std::vector<std::pair<std::string, std::string>> v;
+        auto existe = [](const std::vector<std::string>& args, const std::string& firma) {
+            auto r = ejecutar_proceso(args, {}, 10);
+            return r.codigo == 0 && contiene(minusculas_sin_acentos(r.salida), firma);
+        };
+        // Python (en Windows, "python" puede ser el atajo de la Tienda que no hace nada: se comprueba que responda)
+        for (const char* p : {"python3", "python", "py"})
+            if (existe({p, "--version"}, "python")) { v.push_back({"python", p}); break; }
+        if (existe({"node", "--version"}, "v")) v.push_back({"javascript", "node"});
+#ifdef _WIN32
+        v.push_back({"powershell", "powershell"});
+        v.push_back({"cmd", "cmd"});
+#else
+        v.push_back({"sh", "/bin/sh"});
+#endif
+        return v;
+    }();
+    return lista;
+}
+
 json Herramientas::definiciones() const {
+    std::string lenguajes;
+    for (auto& [l, ruta] : interpretes()) lenguajes += (lenguajes.empty() ? "" : ", ") + l;
     std::vector<json> todas = {
+        funcion("ejecutar_codigo",
+                "Ejecuta un PROGRAMA completo y devuelve lo que imprime. Úsalo para calcular, comprobar un razonamiento o probar algo: "
+                "escribe el programa entero (con sus funciones y su print), no una línea suelta. Lenguajes disponibles aquí: " + lenguajes + ".",
+                {{"lenguaje", texto("uno de: " + lenguajes)}, {"codigo", texto("el programa completo, con saltos de línea normales")},
+                 {"segundos", entero("tiempo máximo, por defecto 60")}},
+                {"lenguaje", "codigo"}),
         funcion("ejecutar_comando",
 #ifdef _WIN32
                 "Ejecuta una orden en la consola de Windows (cmd.exe; para PowerShell usa: powershell -NoProfile -Command \"...\"). "
 #else
                 "Ejecuta una orden en la shell (/bin/sh). "
 #endif
-                "Devuelve el código de salida y la salida. Tienes acceso total al ordenador.",
+                "Devuelve el código de salida y la salida. Tienes acceso total al ordenador. Para ejecutar un programa (Python, etc.) usa ejecutar_codigo.",
                 {{"comando", texto("la orden completa")}, {"directorio", texto("carpeta donde ejecutarla (opcional)")},
                  {"segundos", entero("tiempo máximo, por defecto 120")}},
                 {"comando"}),
@@ -158,6 +188,47 @@ std::string Herramientas::usar_sin_registro(const std::string& nombre, const jso
         std::string sal = res.salida;
         if (sal.size() > MAX_RESULTADO - 200) sal = sal.substr(0, (MAX_RESULTADO - 200) / 2) + "\n[…]\n" + sal.substr(sal.size() - (MAX_RESULTADO - 200) / 2);
         return s + (trim(sal).empty() ? "(sin salida)" : sal);
+    }
+    if (nombre == "ejecutar_codigo") {
+        std::string leng = minusculas_sin_acentos(trim(arg_str(a, "lenguaje", "python")));
+        if (leng == "py" || leng == "python3") leng = "python";
+        if (leng == "js" || leng == "node") leng = "javascript";
+        if (leng == "bash" || leng == "shell") leng = "sh";
+        std::string codigo = arg_str(a, "codigo");
+        if (trim(codigo).empty()) return "Falta 'codigo'.";
+        if (empieza_por(trim(codigo), "```")) {   // quitar una valla de markdown si la puso
+            std::string t = trim(codigo);
+            size_t p = t.find('\n');
+            size_t f = t.rfind("```");
+            codigo = (p != std::string::npos && f > p) ? t.substr(p + 1, f - p - 1) : t;
+        }
+        std::string interprete;
+        std::string disponibles;
+        for (auto& [l, ruta] : interpretes()) {
+            disponibles += (disponibles.empty() ? "" : ", ") + l;
+            if (l == leng) interprete = ruta;
+        }
+        if (interprete.empty()) return "El lenguaje '" + leng + "' no está disponible en este ordenador. Disponibles: " + disponibles + ".";
+        static const std::pair<const char*, const char*> ext[] = {{"python", ".py"}, {"javascript", ".js"}, {"powershell", ".ps1"}, {"cmd", ".cmd"}, {"sh", ".sh"}};
+        std::string e = ".txt";
+        for (auto& [l, x] : ext) if (leng == l) e = x;
+        fs::path dir = c_.datos / "codigo";
+        fs::create_directories(dir);
+        fs::path archivo = fs::absolute(dir / ("programa" + e));
+#ifdef _WIN32
+        if (leng == "powershell") codigo = "$OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8\r\n" + codigo;
+#endif
+        escribir_atomico(archivo, codigo + "\n");
+        int seg = static_cast<int>(std::clamp<long long>(arg_int(a, "segundos", 60), 1, 3600));
+        std::vector<std::string> args;
+        if (leng == "powershell") args = {"powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", archivo.string()};
+        else if (leng == "cmd") args = {"cmd", "/d", "/c", archivo.string()};
+        else args = {interprete, archivo.string()};
+        auto res = ejecutar_proceso(args, dir, seg);
+        std::string sal = res.salida;
+        if (sal.size() > MAX_RESULTADO - 200) sal = sal.substr(0, (MAX_RESULTADO - 200) / 2) + "\n[…]\n" + sal.substr(sal.size() - (MAX_RESULTADO - 200) / 2);
+        return "código de salida: " + std::to_string(res.codigo) + (res.tiempo_agotado ? " (tiempo agotado, se detuvo)" : "") +
+               (res.codigo == 0 ? "" : " (ERROR: lee el mensaje y corrige el programa)") + "\nsalida:\n" + (trim(sal).empty() ? "(no imprimió nada: ¿falta un print?)" : sal);
     }
     if (nombre == "leer_archivo") {
         fs::path p = arg_str(a, "ruta");

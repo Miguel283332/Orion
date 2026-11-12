@@ -24,6 +24,7 @@ struct ResultadoGeneracion {
     std::string texto;
     bool ok = false;
     bool cancelada = false;
+    bool cortada = false;            // terminó por llegar al máximo de tokens (num_predict)
     std::string error;
     json llamadas = json::array();   // herramientas que el modelo pide usar: [{"function":{"name":..,"arguments":{..}}}]
     long long tokens_prompt = 0, tokens_generados = 0;

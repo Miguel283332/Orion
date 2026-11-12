@@ -270,7 +270,11 @@ void Nucleo::bucle_mente() {
 }
 
 void Nucleo::atender(const std::string& mensaje) {
-    fijar_actividad("respondiendo");
+    {
+        std::lock_guard<std::mutex> l(mu_info_);
+        fijar_actividad(modelo_cache_.cargado ? "pensando" : "pensando (la primera vez carga el modelo: puede tardar un poco)");
+    }
+    nota("pensando…");
     cancelar_chat_ = false;
     mente_.fijar_estado_actual(linea_estado_para_modelo());
     {
@@ -281,6 +285,7 @@ void Nucleo::atender(const std::string& mensaje) {
     auto r = mente_.responder(mensaje, [&](const std::string& t) {
         std::lock_guard<std::mutex> l(mu_salida_);
         if (prefijo_pendiente_) {
+            fijar_actividad("respondiendo");
             std::string limpio = t;
             while (!limpio.empty() && (limpio[0] == '\n' || limpio[0] == ' ')) limpio.erase(0, 1);
             if (limpio.empty()) return;
@@ -297,8 +302,13 @@ void Nucleo::atender(const std::string& mensaje) {
         if (linea_abierta_) salida_("\n");
         linea_abierta_ = prefijo_pendiente_ = false;
     }
+    {
+        std::lock_guard<std::mutex> l(mu_info_);
+        modelo_cache_t_ = 0;   // refrescar "dónde" (CPU/GPU) y memoria del modelo
+    }
     if (!r.error.empty()) decir("⚠ " + r.error);
     else if (r.cancelada) nota("respuesta interrumpida");
+    else if (r.cortada) nota("la respuesta se cortó por llegar al máximo de longitud (num_predict = " + std::to_string(cfg_.num_predict) + "): dime «sigue» para que continúe");
     else if (r.tokens_generados > 0) {
         char buf[96];
         std::snprintf(buf, sizeof(buf), "%lld tokens · %.1f tokens/s", r.tokens_generados, r.tokens_por_segundo());
@@ -365,11 +375,7 @@ void Nucleo::iniciar_web() {
 
 json Nucleo::estado_json() {
     json s = mem_.estadisticas();
-    InfoModelo m;
-    {
-        std::lock_guard<std::mutex> l(mu_info_);
-        m = modelo_cache_;
-    }
+    InfoModelo m = info_modelo(false);
     Config c;
     {
         std::lock_guard<std::mutex> l(mu_);
@@ -734,7 +740,7 @@ bool Nucleo::tarea_a_solas(bool forzar_reflexion) {
 // ------------------------------------------------------------------ medidas
 InfoModelo Nucleo::info_modelo(bool fresca) {
     std::lock_guard<std::mutex> l(mu_info_);
-    if (fresca || ahora_s() - modelo_cache_t_ > 600) {
+    if (fresca || ahora_s() - modelo_cache_t_ > 60) {
         modelo_cache_ = llm_.info();
         modelo_cache_t_ = ahora_s();
     }

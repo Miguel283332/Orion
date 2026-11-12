@@ -77,6 +77,7 @@ ResultadoGeneracion Ollama::chat(const json& mensajes, const OpcionesGeneracion&
             }
         }
         if (j.value("done", false)) {
+            res.cortada = j.value("done_reason", std::string()) == "length";
             res.tokens_prompt = j.value("prompt_eval_count", 0LL);
             res.tokens_generados = j.value("eval_count", 0LL);
             res.segundos_prompt = j.value("prompt_eval_duration", 0LL) / 1e9;

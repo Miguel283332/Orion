@@ -105,7 +105,7 @@ Se crea en el primer arranque. Lo puedes editar tú (con Orion apagada) y tambi�
 | `ritmo` | `medio` | cada cuánto piensa a solas |
 | `permisos` | `total` | `total`, `lectura` o `ninguno` |
 | `num_ctx` | `8192` | tokens de contexto |
-| `num_predict` | `512` | longitud máxima de cada respuesta |
+| `num_predict` | `1024` | longitud máxima de cada respuesta (si se corta, lo avisa: dile «sigue») |
 | `temperatura` | `0.7` | creatividad al conversar (la automejora puede ajustarla) |
 | `max_pasos` | `10` | herramientas por respuesta como máximo (la automejora puede ajustarlo) |
 | `cmake` | `cmake` | ruta a cmake (para compilarse a sí misma) |
