@@ -28,6 +28,7 @@ static void uso() {
         "  --prompts DIR    carpeta con sus instrucciones (por defecto <repo>/prompts)\n"
         "  --evaluar ARCH   medirse con un banco de tareas y terminar (lo usa la automejora)\n"
         "  --web-puerto N   puerto de la interfaz web (0 = sin interfaz web)\n"
+        "  --web-cualquier-host  aceptar la web a través de un proxy (p. ej. Colab); el token sigue siendo obligatorio\n"
         "  --sin-color      sin colores en la terminal\n"
         "  --version");
 }
@@ -57,6 +58,7 @@ int main(int argc, char** argv) {
         else if (a == "--max-pasos") max_pasos = std::atoi(valor().c_str());
         else if (a == "--num-ctx") num_ctx = std::atoi(valor().c_str());
         else if (a == "--web-puerto") web_puerto = std::atoi(valor().c_str());
+        else if (a == "--web-cualquier-host") op.web_cualquier_host = true;
         else if (a == "--version") { std::puts("orion 0.3 (memoria por significado, aprendizaje, automejora medida, web y escalado)"); return 0; }
         else if (a == "-h" || a == "--help" || a == "--ayuda") { uso(); return 0; }
         else { std::fprintf(stderr, "opción desconocida: %s\n", a.c_str()); uso(); return 2; }

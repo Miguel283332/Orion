@@ -88,6 +88,7 @@ Además de conversar, puedes pedirle que **haga** cosas. Ella decide qué herram
 | `--repo DIR` | la carpeta actual si es el repositorio; si no, se busca hacia arriba desde el ejecutable |
 | `--prompts DIR` | `<repo>/prompts` |
 | `--web-puerto N` | el de `config.json` (7860); `0` desactiva la web |
+| `--web-cualquier-host` | aceptar la web a través de un proxy (Colab); el token sigue siendo obligatorio |
 | `--sin-autonomia` | piensa a solas |
 | `--sin-color` | colores si es una terminal |
 | `--evaluar ARCHIVO` | modo medición: ejecuta las tareas, imprime `RESULTADO_EVALUACION {...}` y termina (lo usa la automejora) |

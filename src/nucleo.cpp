@@ -396,7 +396,8 @@ RespuestaServidor Nucleo::atender_web(const PeticionHttp& p) {
     };
     // solo desde este ordenador (también protege contra "DNS rebinding")
     std::string host = p.cabecera("host");
-    if (!empieza_por(host, "127.0.0.1:") && !empieza_por(host, "localhost:") && host != "127.0.0.1" && host != "localhost") return error(403, "host no permitido");
+    if (!op_.web_cualquier_host && !empieza_por(host, "127.0.0.1:") && !empieza_por(host, "localhost:") && host != "127.0.0.1" && host != "localhost")
+        return error(403, "host no permitido");
     std::string ruta = p.ruta, consulta;
     size_t q = ruta.find('?');
     if (q != std::string::npos) { consulta = ruta.substr(q + 1); ruta = ruta.substr(0, q); }
