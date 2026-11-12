@@ -8,6 +8,7 @@ El modelo decide cuándo usarlas (llamadas a herramientas nativas de Ollama; `qw
 
 | Herramienta | Qué hace | Permiso |
 |---|---|---|
+| `ejecutar_codigo` | ejecutar un **programa completo** (Python si está instalado, PowerShell, cmd; en Linux sh; Node si está) para calcular o comprobar algo | total |
 | `ejecutar_comando` | cualquier orden en `cmd.exe` (y PowerShell con `powershell -Command`), con tiempo máximo | total |
 | `escribir_archivo` | escribir o añadir a cualquier archivo | total |
 | `guardar_habilidad` · `usar_habilidad` | guardar un script que funciona (se prueba antes) y volver a usarlo | total |

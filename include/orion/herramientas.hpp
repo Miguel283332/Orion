@@ -41,6 +41,8 @@ public:
     static std::string codificar_url(const std::string& s);
     static std::string decodificar_url(const std::string& s);
     static fs::path ejecutable_compilado(const fs::path& dir_build);
+    // Lenguajes con los que puede ejecutar programas en este ordenador: {"python": "python3", "sh": "/bin/sh", ...}
+    static const std::vector<std::pair<std::string, std::string>>& interpretes();
 
 private:
     std::string usar_sin_registro(const std::string& nombre, const json& a);

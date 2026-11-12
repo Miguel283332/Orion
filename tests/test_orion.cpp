@@ -1,5 +1,6 @@
 // Pruebas de Orion con un Ollama SIMULADO (un servidor HTTP en el propio proceso que habla el protocolo de Ollama).
 // No necesitan Ollama ni red. Ejecutar:  ctest --test-dir build   (o build/orion_tests)
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -31,7 +32,8 @@ struct OllamaSimulado {
     std::atomic<bool> sin_embeddings{false};
     std::string practica_script = "echo $((2 + 3))", practica_prediccion = "5";
     int embeds = 0;
-    std::atomic<long long> duracion_ns{500000000};   // tiempo de generación que declara (para simular un ordenador más rápido)
+    std::atomic<long long> duracion_ns{500000000};
+    std::atomic<bool> cortar{false};   // simular una respuesta cortada por longitud   // tiempo de generación que declara (para simular un ordenador más rápido)
     void parar() { srv.parar(); }
     ServidorHttp srv;
     int puerto = 0;
@@ -146,7 +148,7 @@ struct OllamaSimulado {
         r.pausa_ms = pausa_ms;
         auto partes = trocear(texto);
         for (auto& t : partes) r.trozos.push_back(json{{"message", {{"role", "assistant"}, {"content", t}}}, {"done", false}}.dump() + "\n");
-        r.trozos.push_back(json{{"done", true}, {"eval_count", partes.size()}, {"eval_duration", duracion_ns.load()}, {"prompt_eval_count", 40},
+        r.trozos.push_back(json{{"done", true}, {"done_reason", cortar ? "length" : "stop"}, {"eval_count", partes.size()}, {"eval_duration", duracion_ns.load()}, {"prompt_eval_count", 40},
                                 {"prompt_eval_duration", 100000000}}.dump() + "\n");
         return r;
     }
@@ -255,6 +257,16 @@ static void t_ollama() {
     CHECK(!e.ok && contiene(e.error, "Ollama"), "Ollama caído: mensaje que menciona Ollama");
 }
 
+static void t_config() {
+    DirTemporal d;
+    escribir_atomico(d.p / "config.json", R"({"modelo": "qwen2.5:7b", "num_predict": 512, "ritmo": "alto"})");
+    Config c = Config::cargar(d.p / "config.json");
+    CHECK(c.num_predict == 1024 && c.modelo == "qwen2.5:7b" && c.ritmo == "alto", "migra la configuración antigua (512 → 1024) y conserva lo demás");
+    CHECK(contiene(leer_archivo(d.p / "config.json"), "\"config_version\": 2"), "guarda la configuración migrada");
+    escribir_atomico(d.p / "config.json", R"({"config_version": 2, "num_predict": 512})");
+    CHECK(Config::cargar(d.p / "config.json").num_predict == 512, "si ya es del formato nuevo, respeta lo que pongas");
+}
+
 static void t_memoria() {
     DirTemporal d;
     {
@@ -283,6 +295,9 @@ static void t_memoria() {
     CHECK(contiene(m.yo(), "Otra versión") && fs::exists(d.p / "yo_versiones"), "yo.md con copia de la versión anterior");
     CHECK(m.estadisticas().value("llamadas", 0.0) == 2.0, "estadísticas persistentes");
     CHECK(m.recordar("x", "Otro hecho distinto y nuevo.", "manual") == "r4", "los ids siguen tras recargar");
+    m.recordar("usuario|proyecto|preferencia", "Le interesan los factoriales.", "reflexion");
+    CHECK(m.recuerdos().back().tipo == "usuario" && normalizar_tipo("x") == "mundo" && normalizar_tipo("Preferencia") == "preferencia",
+          "el tipo de recuerdo se normaliza (no se guarda la plantilla «usuario|proyecto|...»)");
 }
 
 static void t_nucleo() {
@@ -369,6 +384,13 @@ static void t_interrupcion() {
     CHECK(contiene(cap.ver(), "lo dejo para luego") && contiene(cap.ver(), "Orion> Hola, soy Orion"), "aviso de interrupción y respuesta");
     if (!contiene(cap.ver(), "lo dejo para luego")) std::fprintf(stderr, "%s\n", cap.ver().c_str());
     CHECK(n.memoria().recuerdos().empty(), "la reflexión interrumpida no deja nada a medias");
+    // aviso de "pensando…" y de respuesta cortada por longitud
+    CHECK(contiene(cap.ver(), "· pensando…"), "avisa de que está pensando antes de que llegue el texto");
+    sim.cortar = true;
+    n.entrada("algo largo");
+    n.esperar_inactividad(10);
+    sim.cortar = false;
+    CHECK(contiene(cap.ver(), "se cortó por llegar al máximo de longitud"), "avisa si la respuesta se corta por longitud");
     // /para corta una respuesta larga
     sim.pausa_ms = 50;
     sim.trozos_extra = 200;
@@ -412,7 +434,23 @@ static void t_herramientas() {
     c.aviso = [&](const std::string& t) { avisos.push_back(t); };
     c.reinicio_pedido = &reinicio;
     Herramientas h(c);
-    CHECK(h.definiciones().size() == 13, "acceso total: 13 herramientas");
+    CHECK(h.definiciones().size() == 14, "acceso total: 14 herramientas");
+    // ejecutar_codigo: un programa completo, con el intérprete que haya
+    bool hay_python = false;
+    for (auto& [l, ruta] : Herramientas::interpretes()) hay_python |= l == "python";
+    if (hay_python) {
+        std::string prog = "def ceros(n):\n    c, p = 0, 5\n    while p <= n:\n        c += n // p\n        p *= 5\n    return c\n"
+                           "n = 1\nwhile ceros(n) < 100:\n    n += 1\nprint(n, ceros(n))\n";
+        CHECK(contiene(h.usar("ejecutar_codigo", {{"lenguaje", "python"}, {"codigo", prog}}), "405 100"), "ejecutar_codigo: un programa Python completo");
+        CHECK(contiene(h.usar("ejecutar_codigo", {{"lenguaje", "python3"}, {"codigo", "```python\nprint(6*7)\n```"}}), "42"), "ejecutar_codigo: acepta alias y vallas de markdown");
+        CHECK(contiene(h.usar("ejecutar_codigo", {{"lenguaje", "python"}, {"codigo", "print(1/0)"}}), "ERROR"), "ejecutar_codigo: un error se señala para que lo corrija");
+    }
+#ifdef _WIN32
+    CHECK(contiene(h.usar("ejecutar_codigo", {{"lenguaje", "powershell"}, {"codigo", "Write-Output (6*7)"}}), "42"), "ejecutar_codigo: powershell");
+#else
+    CHECK(contiene(h.usar("ejecutar_codigo", {{"lenguaje", "sh"}, {"codigo", "echo $((6*7))"}}), "42"), "ejecutar_codigo: sh");
+#endif
+    CHECK(contiene(h.usar("ejecutar_codigo", {{"lenguaje", "cobol"}, {"codigo", "x"}}), "no está disponible"), "ejecutar_codigo: lenguaje no disponible");
     CHECK(contiene(h.usar("ejecutar_comando", {{"comando", "echo hola-orion"}}), "hola-orion"), "ejecutar_comando");
     CHECK(contiene(h.usar("ejecutar_comando", {{"comando", "exit 3"}}), "código de salida: 3"), "código de salida");
     fs::path f = d.p / "sub" / "nota.txt";
@@ -424,8 +462,9 @@ static void t_herramientas() {
     CHECK(contiene(h.usar("crear_meta_de_aprendizaje", {{"tema", "espumas de espín"}}), "creada") && mem.metas().size() == 1, "crear meta");
     CHECK(contiene(h.usar("reiniciarme", json::object()), "reiniciaré") && reinicio, "reiniciarme");
     CHECK(contiene(h.usar("inventada", json::object()), "No tengo permiso"), "herramienta desconocida");
-    CHECK(!avisos.empty() && contiene(avisos[0], "⚙ ejecutar_comando: echo hola-orion"), "muestra lo que hace");
-    CHECK(split_lines(leer_archivo(d.p / "acciones.jsonl")).size() == 10, "registra cada acción");
+    CHECK(std::any_of(avisos.begin(), avisos.end(), [](const std::string& a) { return contiene(a, "⚙ ejecutar_comando: echo hola-orion"); }),
+          "muestra lo que hace");
+    CHECK(split_lines(leer_archivo(d.p / "acciones.jsonl")).size() == 10 + (hay_python ? 3 : 0) + 2, "registra cada acción");
     c.permisos = "lectura";
     Herramientas lect(c);
     CHECK(lect.definiciones().size() == 7 && contiene(lect.usar("ejecutar_comando", {{"comando", "echo x"}}), "No tengo permiso"), "permisos de lectura");
@@ -857,7 +896,7 @@ static void t_dispositivos() {
 
 int main() {
     struct { const char* n; void (*f)(); } pruebas[] = {{"util", t_util}, {"decodificador", t_decodificador}, {"http", t_http}, {"ollama", t_ollama},
-                                                       {"memoria", t_memoria}, {"nucleo", t_nucleo}, {"interrupcion", t_interrupcion},
+                                                       {"config", t_config}, {"memoria", t_memoria}, {"nucleo", t_nucleo}, {"interrupcion", t_interrupcion},
                                                        {"ejecutables", t_ejecutables}, {"herramientas", t_herramientas}, {"agente", t_agente},
                                                        {"metas", t_metas}, {"guardian_actualizacion", t_guardian_actualizacion},
                                                        {"significado", t_significado}, {"aprender", t_aprender},

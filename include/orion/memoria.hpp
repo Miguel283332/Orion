@@ -115,5 +115,6 @@ private:
 };
 
 std::string yo_inicial();
+std::string normalizar_tipo(const std::string& tipo);   // tipo de recuerdo válido ("usuario|proyecto" → "usuario")
 
 }  // namespace orion

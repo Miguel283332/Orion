@@ -26,7 +26,7 @@ struct Config {
     std::string dispositivo = "local";  // en cuál piensa ahora
     bool dispositivo_auto = true;       // pasarse sola al más rápido disponible (y volver si cae)
     int semilla = -1;                   // -1: aleatoria (en las evaluaciones se fija para poder comparar)
-    int num_predict = 512;
+    int num_predict = 1024;
     double temperatura = 0.7;
     static Config cargar(const fs::path& archivo);   // crea el archivo con valores por defecto si no existe
     void guardar(const fs::path& archivo) const;

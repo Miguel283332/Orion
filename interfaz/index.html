@@ -25,17 +25,21 @@
   .linea-nota { color:var(--tenue); }
   .linea-tu { color:var(--acento); font-weight:600; }
   .linea-estrella { color:var(--ok); font-weight:600; }
+  .linea-codigo { background:var(--codigo); padding:0 8px; border-left:3px solid var(--borde); }
+  .linea-valla { background:var(--codigo); padding:0 8px; border-left:3px solid var(--borde); color:var(--tenue); font-size:12px; }
   form { display:flex; gap:8px; padding:10px; border-top:1px solid var(--borde); }
   #entrada { flex:1; padding:9px 11px; border-radius:8px; border:1px solid var(--borde); background:var(--fondo); color:var(--texto); font:inherit; }
   button { padding:8px 14px; border-radius:8px; border:1px solid var(--borde); background:var(--acento); color:var(--sobre-acento); font:inherit; cursor:pointer; }
   button.secundario { background:transparent; color:var(--texto); }
-  #lateral { display:flex; flex-direction:column; gap:12px; overflow-y:auto; max-height: calc(100vh - 76px); }
+  #lateral { display:flex; flex-direction:column; gap:12px; overflow-y:auto; max-height: calc(100vh - 76px); padding-right:2px; }
+  #lateral > .panel { flex-shrink:0; }   /* que no se encojan y se monten unos sobre otros: la columna hace scroll */
   .bloque { padding:10px 14px; }
   .bloque h2 { font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--tenue); margin:2px 0 8px; }
   .fila { display:flex; justify-content:space-between; gap:8px; font-size:14px; padding:2px 0; }
   .fila span:first-child { color:var(--tenue); }
   .lista { font-size:13.5px; }
-  .lista div { padding:5px 0; border-top:1px solid var(--borde); }
+  .lista div { padding:5px 0; border-top:1px solid var(--borde); overflow-wrap:anywhere; }
+  .lista .detalle { color:var(--tenue); font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size:12.5px; }
   .lista div:first-child { border-top:none; }
   .etq { font-size:11.5px; padding:1px 6px; border-radius:6px; background:var(--codigo); color:var(--tenue); margin-right:4px; }
   .ok { color:var(--ok); } .mal { color:var(--mal); }
@@ -85,7 +89,10 @@ async function api(ruta, cuerpo) {
   return r.json();
 }
 function esc(t) { return String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+let enCodigo = false;
 function clase(l) {
+  if (l.trimStart().startsWith("```")) { enCodigo = !enCodigo; return "linea-valla"; }
+  if (enCodigo) return "linea-codigo";
   if (l.startsWith("  · ")) return "linea-nota";
   if (l.startsWith("Tú")) return "linea-tu";
   if (l.startsWith("★")) return "linea-estrella";
@@ -148,8 +155,14 @@ async function lateral() {
       ? `<div><span class="etq">#${x.n}</span>↩ ${esc(x.motivo)}</div>`
       : `<div><span class="etq">#${x.n}</span><span class="${x.aceptada ? "ok" : "mal"}">${x.aceptada ? "aceptada" : "rechazada"}</span> ${esc(x.motivo || "")}<br><span class="etq">banco ${esc(x.banco_antes || "?")} → ${esc(x.banco_despues || "—")}</span>${x.examen_antes ? `<span class="etq">examen ${esc(x.examen_antes)} → ${esc(x.examen_despues)}</span>` : ""}</div>`).join("") : "<div>Aún no se ha mejorado.</div>";
     const a = await api("/api/acciones?n=8");
+    const resumen = x => {
+      const g = x.argumentos || {};
+      const v = g.comando || g.codigo || g.ruta || g.url || g.consulta || g.tema || g.texto || g.nombre || "";
+      return String(v).replace(/\s+/g, " ").slice(0, 110);
+    };
     document.getElementById("acciones").innerHTML = a.length ? a.reverse().map(x =>
-      `<div><span class="etq">${esc(x.herramienta)}</span>${esc(JSON.stringify(x.argumentos || {}).slice(0, 90))}</div>`).join("") : "<div>Sin acciones.</div>";
+      `<div><span class="etq">${esc(x.herramienta)}</span><span class="etq">${esc((x.fecha || "").slice(11, 16))}</span><br>` +
+      `<span class="detalle">${esc(resumen(x))}</span></div>`).join("") : "<div>Sin acciones.</div>";
     const r = await api("/api/recuerdos?n=8");
     document.getElementById("recuerdos").innerHTML = r.length ? r.reverse().map(x =>
       `<div><span class="etq">${esc(x.tipo)}</span>${esc(x.texto)}</div>`).join("") : "<div>Sin recuerdos.</div>";

@@ -138,7 +138,22 @@ static double parecido(const std::string& a, const std::string& b) {   // Jaccar
     return static_cast<double>(comun) / static_cast<double>(sa.size() + sb.size() - comun);
 }
 
-std::string Memoria::recordar(const std::string& tipo, const std::string& texto, const std::string& origen) {
+std::string normalizar_tipo(const std::string& tipo) {
+    static const char* validos[] = {"usuario", "proyecto", "preferencia", "yo", "mundo", "manual", "aprendido", "leccion", "resumen"};
+    std::string t = minusculas_sin_acentos(trim(tipo));
+    for (auto v : validos) if (t == v) return t;
+    // p. ej. el modelo copió la plantilla "usuario|proyecto|preferencia": se queda con el primero válido que aparezca
+    size_t mejor = std::string::npos;
+    std::string elegido = "mundo";
+    for (auto v : validos) {
+        size_t p = t.find(v);
+        if (p != std::string::npos && p < mejor && std::string(v) != "yo") { mejor = p; elegido = v; }
+    }
+    return elegido;
+}
+
+std::string Memoria::recordar(const std::string& tipo_crudo, const std::string& texto, const std::string& origen) {
+    std::string tipo = normalizar_tipo(tipo_crudo);
     std::string t = trim(texto);
     if (t.empty()) return "";
     std::lock_guard<std::mutex> l(mu_);
