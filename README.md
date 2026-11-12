@@ -1,126 +1,74 @@
-# Demostrador
+# Orion
 
-Resuelve **problemas matemáticos y físicos** con un modelo local de **Ollama** (p. ej. `qwen2.5:7b`) y un **verificador externo**: el modelo *propone* y el verificador *decide*. Está pensado para problemas **largos** y para poder **interrumpirlo en cualquier momento** sin perder trabajo.
+Orion es una IA autónoma que **vive en tu ordenador**: está siempre en marcha, **habla contigo por la terminal**, **recuerda** lo que hablasteis (también después de reiniciarse), **reflexiona a solas** cuando no le hablas, escribe un **diario** y mantiene un documento sobre **cómo se ve a sí misma**. Usa **un único modelo de lenguaje local** (a través de [Ollama](https://ollama.com)) y está escrita en **C++** por rendimiento.
 
-| Backend | Para qué | Juez |
-|---|---|---|
-| `lean` | Matemáticas: demostraciones formales | **Lean 4** (compila la demostración y comprueba los axiomas) |
-| `sympy` | Física y cálculo simbólico: derivaciones | Criterios fijados **antes** de resolver, ejecutados con **SymPy** |
+El objetivo a largo plazo es que **se mejore a sí misma**: que aprenda lo que no sabe ("voy a aprender") y que modifique **cualquier parte de su propio código** con un historial de versiones y vuelta atrás. Eso llega por fases (ver [Hoja de ruta](docs/HOJA_DE_RUTA.md)); **esta versión es la fase 1**.
 
-Hay **dos implementaciones** con el mismo algoritmo y el **mismo formato de estado** (puedes pausar con una y reanudar con la otra):
+| Qué hace ya (fase 1) | Qué llega después |
+|---|---|
+| Chat en la terminal mientras piensa a solas (tu mensaje la interrumpe) | Fase 2: búsqueda de recuerdos por significado |
+| Memoria persistente: conversación, recuerdos, diario, `yo.md` | Fase 3: "voy a aprender", autoestudio con juez real, habilidades |
+| Reflexión a solas: extrae recuerdos, escribe el diario, reescribe `yo.md` | Fase 4: automejora de **todo** su código (git + guardián) |
+| Mide su hardware y su modelo (`/modelo`, `/hardware`, `/estado`...) | Fase 5 (con GPU): ajuste de sus propios pesos |
+| Guardián que la reinicia si se cae o si pide reiniciarse | |
 
-| | Archivo | Para qué |
-|---|---|---|
-| **Python** | [`demostrador.py`](demostrador.py) (un solo archivo, solo biblioteca estándar) | Google Colab y cualquier PC |
-| **C++** | [`src/`](src), [`include/`](include), [`CMakeLists.txt`](CMakeLists.txt) | Local y rápido, sin intérprete (para tu RTX) |
+## Instalación en Windows 11 (VS Code + CMake)
 
-> El agente conversacional y el modelo de bytes anteriores siguen en [`legacy/`](legacy).
+1. **Ollama**: instala [Ollama para Windows](https://ollama.com/download) y descarga el modelo (en un portátil con i5 y 12 GB, el de 3B):
+   ```bash
+   ollama pull qwen2.5:3b
+   ```
+2. **Compilador de C++**: si ya compilaste antes con MSVC, lo tienes. Si no, instala *Build Tools for Visual Studio 2022* (carga de trabajo "Desarrollo para el escritorio con C++").
+3. En **VS Code**, con las extensiones *C/C++* y *CMake Tools*: abre la carpeta del repositorio. Elige el preset **Orion (build/)** y compila (**Release**). O desde una terminal:
+   ```bash
+   cmake --preset orion
+   cmake --build build --config Release
+   ctest --test-dir build -C Release --output-on-failure
+   ```
+4. **Arranca** Orion a través del guardián, desde la carpeta del repositorio (así sus datos quedan en `datos/`):
+   ```bash
+   build\Release\guardian.exe
+   ```
+   Con MinGW, o en Linux, los ejecutables están en `build/` directamente (`build/guardian`).
 
-## Cómo funciona
+> Recomendación: deja que Orion viva en una carpeta propia (por ejemplo `C:\Orion`) y no en tus documentos personales. En la fase 4 tendrá acceso total a su carpeta y a comandos.
+
+## Uso
+
+Escribe y pulsa Enter para hablar con ella. Mientras está pensando a solas verás notas tenues (`· reflexionando…`). Si le escribes, **deja lo que estaba haciendo y te atiende**.
 
 ```
- enunciado ──► FASE 0: formalizar ──► árbol de demostración (se guarda tras CADA intento)
-              (el verificador comprueba     │
-               el enunciado; el modelo       ├─ 1. tácticas automáticas   (first | omega | simp | decide | ...)
-               revisa su fidelidad)          ├─ 2. intentos directos       (con el código y el error del intento anterior)
-                                             └─ 3. descomposición en lemas (recursiva): cada lema es un subárbol;
-                                                  los ya demostrados se conservan si el plan falla
+Orion · 12 recuerdos, 84 turnos de conversación, 5 entradas de diario · datos en C:\Orion\datos
+Modelo qwen2.5:3b (3.09 mil millones de parámetros, Q4_K_M) · Ollama x.y.z
+Hola, ¿qué recuerdas de mí?
+Orion> Que te llamas Ana y que estás construyéndome en C++...
+  · 54 tokens · 7.8 tokens/s
+/modelo
+Modelo: qwen2.5:3b
+Parámetros: 3.09 mil millones (3085938688)
+...
 ```
 
-- **El juez es externo.** En Lean, una demostración solo vale si compila **y** `#print axioms` solo muestra `propext`, `Classical.choice`, `Quot.sound` (sin `sorry` ni axiomas propios). El modelo no puede declarar que algo está demostrado.
-- **Reparación guiada.** Cada reintento recibe el código anterior y el error del verificador, no solo "falló".
-- **Reanudable.** Todo el árbol (lemas probados, intentos, errores, semillas) está en `estado.json`, escrito de forma atómica tras cada intento. Ejecutar de nuevo el mismo comando **continúa exactamente donde se quedó**, también tras Ctrl-C, `SIGTERM`, una caída de Ollama o un corte de la sesión de Colab.
-- **Presupuesto.** `--horas` y `--max-intentos` limitan *una sesión*; al llegar, se pausa con el progreso guardado.
+Comandos principales (todos en [docs/COMANDOS.md](docs/COMANDOS.md)): `/estado`, `/modelo`, `/hardware`, `/memoria`, `/recuerdos`, `/buscar`, `/diario`, `/yo`, `/reflexiona`, `/pausa`, `/ritmo`, `/para`, `/versiones`, `/reinicia`, `/salir`.
 
-## Empezar
+## Cómo está hecha
 
-### Google Colab
-Abre [`colab/Demostrador_Colab.ipynb`](colab/Demostrador_Colab.ipynb): instala Ollama, Lean 4 y el modelo, monta Drive (para que el progreso sobreviva) y resuelve los dos problemas de ejemplo.
+- [Arquitectura](docs/ARQUITECTURA.md): el bucle de vida, los dos hilos, la memoria y por qué un solo modelo.
+- [Automejora](docs/AUTOMEJORA.md): cómo modificará su propio código (fase 4), el guardián y la vuelta atrás.
+- [Consciencia](docs/CONSCIENCIA.md): qué imita esta arquitectura, qué no sabemos y qué se registra.
+- [Hoja de ruta](docs/HOJA_DE_RUTA.md): fases y criterios para dar cada una por terminada.
 
-### Python
-Necesitas [Ollama](https://ollama.com/download) con el modelo, y Lean 4 ([elan](https://github.com/leanprover/elan)) para `lean` o `pip install sympy` para `sympy`.
-
-```bash
-ollama pull qwen2.5:7b
-python demostrador.py problemas                          # lista los problemas incluidos (no hacen falta archivos)
-python demostrador.py resolver --problema par_mayor
-python demostrador.py resolver --problema escape_schwarzschild
-python demostrador.py estado --dir demostrador_runs/par_mayor_xxxxxxxx     # progreso
+```
+Orion/
+├─ src/, include/orion/   el código (C++20): util, http, ollama, memoria, sistema, mente, nucleo + main_orion, main_guardian
+├─ tests/test_orion.cpp   pruebas con un Ollama simulado (no necesitan Ollama ni red)
+├─ third_party/json.hpp   nlohmann/json (MIT), incluido: no hay nada que descargar
+├─ docs/                  documentación
+├─ datos/                 (se crea al arrancar) memoria, diario, yo.md, configuración, registro del guardián
+└─ legacy/                proyectos anteriores: demostrador (Python/C++/Colab), agente Python, modelo de bytes
 ```
 
-### C++ (CMake / Visual Studio Code)
-```bash
-cmake -S . -B build
-cmake --build build --config Release
-ctest --test-dir build -C Release --output-on-failure
-./build/demostrador resolver --problema par_mayor     # Windows: .\build\Release\demostrador.exe
-```
-Necesita `curl` en el PATH (viene con Windows 10+ y Linux/macOS) y `python3` con `sympy` solo para el backend `sympy`.
+## Estado real
 
-## Problemas
-
-Los dos de ejemplo van **dentro del programa** (`--problema par_mayor`, `--problema escape_schwarzschild`). Para otros, un archivo JSON (`--problema ruta.json`; hay ejemplos en [`problemas/`](problemas)) o `--enunciado "texto" --backend lean|sympy`:
-```json
-{ "id": "par_mayor", "dominio": "matematicas", "backend": "lean",
-  "enunciado": "Demuestra la existencia de un número natural m mayor que cualquier n dado, tal que m sea par." }
-```
-- `facil_par_mayor.json` (Lean): el problema inicial.
-- `facil_velocidad_escape_schwarzschild.json` (SymPy): deduce la velocidad de escape y demuestra que vale `c` en el radio de Schwarzschild `r_s = 2GM/c²`. Es el primer paso hacia los agujeros negros.
-
-### Problemas largos o difíciles
-```bash
-python demostrador.py resolver --problema problemas/tu_problema.json --horas 3 --directos 10 --replanes 5 --profundidad 3
-```
-Si el plan actual no basta, el motor pide lemas nuevos **sin descartar los ya demostrados**. Códigos de salida: `0` verificado · `1` no resuelto con esos límites · `3` pausa por presupuesto · `4` Ollama caído · `130` interrumpido (en los tres últimos casos, vuelve a ejecutar el mismo comando).
-
-Para análisis real o Mathlib hace falta un proyecto *lake* con Mathlib: `--lake-dir RUTA --mathlib`.
-
-## Currículo y autoaprendizaje (solo Python por ahora)
-
-```bash
-python demostrador.py curriculo --pista lean  --dir curriculo_runs --horas 3     # 18 niveles de Lean, de omega a mcd/Fibonacci
-python demostrador.py curriculo --pista sympy --dir curriculo_runs               # 12 niveles de física hasta Schwarzschild
-```
-[`curriculo/curriculo.json`](curriculo/curriculo.json) ordena los problemas por dificultad. Cada demostración **verificada** se guarda en `biblioteca_<pista>.json` y las más parecidas se muestran al modelo como ejemplos en los niveles siguientes (también con `resolver --biblioteca RUTA`). No cambia los pesos del modelo: mejora el *contexto* con lo ya demostrado. El progreso se reanuda (`progreso_<pista>.json`).
-
-**Física fácil sin depender del modelo en la fase 0:** los problemas incluidos (y los niveles 1, 2, 3 y 5 de física del currículo) llevan una `especificacion` (símbolos, variables de resultado y criterios) revisada a mano y comprobada con una solución de referencia en los tests. El modelo solo tiene que derivar el resultado. Los criterios los escribe una persona, no el modelo.
-
-La pista `abiertos` contiene conjeturas famosas (Goldbach, Collatz, primos gemelos...) **solo en su versión acotada y comprobable**; el enunciado general sigue abierto y no se afirma que el sistema pueda resolverlo. Los enunciados del currículo están revisados a mano, no compilados con Lean real.
-
-Endurecimiento tras revisión (Python y C++): el marcador `TODO_VERIFICADO` debe aparecer una sola vez y al final, los criterios deben ser booleanos estrictos, más construcciones prohibidas (`SystemExit`, `os`, `sys`, dunders, `trace`, `+native`...) y `keep_alive` en Ollama. **Sigue sin ser un sandbox real** (ver límites).
-
-## Errores del cuaderno original que se han corregido
-
-1. **Se perdía el progreso del plan**: el estado no guardaba los lemas ni las demostraciones ya hechas, así que al reanudar se rehacía todo. Ahora se guarda el árbol completo tras cada intento.
-2. **Las semillas se repetían tras reanudar** (`seed = 100 + intento`, y el contador volvía a 1): se reproducían los mismos intentos. Ahora son únicas y persistentes.
-3. **El modelo no veía su intento anterior**, solo un texto de error. Ahora recibe el código que falló y el error de Lean, más un historial de errores para no repetirlos.
-4. **`aesop` y `norm_num` en `import Lean`**: necesitan Mathlib y siempre fallaban, gastando compilaciones. Ahora la lista de tácticas depende de si hay Mathlib, y se prueban todas en **una** compilación con `first | ... | ...`.
-5. **La guía de Lean era errónea**: decía que `exact ⟨t, p, q⟩` no vale para `∃ x, P x ∧ Q x`, y sí vale.
-6. **Sin comprobación de axiomas**: ahora `#print axioms` rechaza `sorryAx` y axiomas propios; se prohíben también `native_decide`, `unsafe`, `macro`, `set_option`, `import`…
-7. **`normalizar` aplicaba NFKC antes de reemplazar `ℕ`**, que ya se había convertido en `N` y nunca llegaba a `Nat`.
-8. **Extracción frágil**: tomaba siempre el *último* bloque de código (suele ser una explicación) y no respetaba la sangría relativa del cuerpo.
-9. **Sin reintentos ni control de fallos de Ollama**: una caída abortaba todo. Ahora guarda el estado y sale con un mensaje claro.
-10. **Sin descomposición recursiva** y sin tiempo/intentos máximos: ahora hay ambos.
-
-## Pruebas
-
-```bash
-python demostrador.py selftest        # 42 pruebas del motor (Lean simulado, SymPy real)
-tests/e2e_python.sh                   # procesos reales: CLI + Ollama simulado + Lean simulado/SymPy real
-ctest --test-dir build                # 129 comprobaciones del motor C++
-tests/e2e_cpp.sh build/demostrador    # procesos reales C++, SIGTERM, reanudación e interoperabilidad con Python
-```
-
-## Estado real: qué está verificado y qué no
-
-**Verificado** (con un Ollama y un Lean *simulados*, `tests/mock_ollama.py` y `tests/mock_lean.py`, porque en el entorno de desarrollo no había Ollama ni Lean): todo el motor (formalización, intentos, reparación, planes recursivos, conservación de lemas, axiomas, prohibidos, repetidos), la reanudación tras pausa, `SIGTERM`, caída de Ollama y estado corrupto, y la interoperabilidad Python↔C++. La parte de **física usa SymPy real**: la velocidad de escape se deriva y se verifica de verdad. La versión C++ compila sin avisos con GCC y clang y se compila y enlaza como `.exe` con MinGW-w64.
-
-**NO verificado con el Lean real** (y puede necesitar ajustes cuando lo pruebes):
-- El formato exacto de los mensajes de Lean y la sintaxis de `first | ... | ...` en varias líneas; que `omega` y `exact?` existan en tu versión de Lean.
-- La calidad real de `qwen2.5:7b` formalizando y demostrando; el modelo se equivoca, y los problemas difíciles (agujeros negros) probablemente necesiten Mathlib y mucho tiempo.
-- La versión C++ con **MSVC**, o ejecutada en Windows.
-
-**Límites que conviene conocer:**
-- **Física ≠ Lean.** En el backend `sympy` los *criterios* los escribe el modelo antes de resolver; la verificación es tan fiable como esos criterios. Revísalos (salen en el registro). No es una demostración formal.
-- Que el enunciado formal sea **fiel** al problema solo lo comprueba el propio modelo (señal débil). En Lean, revisa la formalización a mano en problemas importantes.
-- Un modelo de 7B resuelve problemas fáciles; para problemas profundos, el límite es el modelo, no el motor.
+- **Probado** con un Ollama *simulado* (88 comprobaciones): HTTP propio con streaming y cancelación, chat, memoria y su persistencia, reflexión, diario, `yo.md`, comandos, interrupción, `/para`, los ejecutables reales por la terminal, Ollama caído, y el guardián (reinicio a petición y parada tras caídas repetidas). Sin errores con AddressSanitizer, UBSan y ThreadSanitizer, y con clang `-Werror`. Compila para Windows con MinGW.
+- **No probado todavía**: con Ollama real, con MSVC y ejecutándose en Windows. La calidad de las reflexiones depende del modelo de 3B: revisa `/recuerdos` y usa `/olvida` si guarda algo mal.

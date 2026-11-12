@@ -1,0 +1,19 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "orion",
+      "displayName": "Orion (build/)",
+      "description": "Configuración por defecto: compila en la carpeta build/ con el compilador que elijas en VS Code (MSVC o MinGW).",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": { "ORION_TESTS": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "release", "displayName": "Release (rápido)", "configurePreset": "orion", "configuration": "Release" },
+    { "name": "debug", "displayName": "Debug (para depurar)", "configurePreset": "orion", "configuration": "Debug" }
+  ],
+  "testPresets": [
+    { "name": "pruebas", "displayName": "Pruebas", "configurePreset": "orion", "configuration": "Release", "output": { "outputOnFailure": true } }
+  ]
+}
