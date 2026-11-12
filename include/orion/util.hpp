@@ -22,6 +22,8 @@ std::string formato_bytes(double bytes);                        // 1536 -> "1.5 
 std::string formato_numero(double n);                           // 3085938688 -> "3.09 mil millones"
 std::string formato_duracion(double segundos);                  // 3725 -> "1 h 2 min"
 
+std::string sha256_hex(const std::string& datos);              // huella SHA-256 en hexadecimal
+
 // ---- tiempo
 double ahora_s();                                               // reloj de pared, segundos desde la época
 std::string fecha_hora();                                       // "2026-11-12 14:03"

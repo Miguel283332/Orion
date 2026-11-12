@@ -1,46 +1,61 @@
 # Automejora
 
-> **Estado (versión 0.2):** ya funciona la mecánica: puede leer y editar su código, compilarse en `build-auto/`, reiniciarse, y el guardián aplica la versión nueva o vuelve atrás. **Falta** lo que hace que la automejora sea *fiable*: un banco de pruebas que mida si un cambio la mejora, el examen de referencia externo y el registro `/mejoras` (fase 4). Hoy la decisión de cambiarse es del modelo, a veces porque se lo pides tú.
+Orion se mejora de dos formas:
 
-## Cómo se modifica hoy
+| | Qué cambia | Quién decide | Cómo se comprueba |
+|---|---|---|---|
+| **Automejora medida** (automática) | sus **instrucciones** (`prompts/sistema.md`) y parámetros (temperatura, herramientas por turno) | ella, a solas, cada `automejora_cada_h` horas o con `/mejorate` | banco de pruebas + examen de referencia, con la misma semilla |
+| **Cambio de código** (con herramientas) | **cualquier archivo**, incluido su C++ | ella, si se lo pides o lo decide en una conversación o una meta | compila en `build-auto/`, prueba `--version`; el guardián aplica la versión o vuelve atrás |
 
-1. Lee su código (`leer_archivo`) y decide un cambio, por iniciativa propia o porque se lo pides ("mejora cómo escribes tu diario y aplícalo").
-2. Lo escribe (`escribir_archivo`) y lo registra con git (`ejecutar_comando`: `git add` / `git commit`).
-3. `compilar_nueva_version`: compila en `build-auto/` sin pararse y prueba que la versión nueva arranca (`--version`). Si no compila, recibe los errores para corregirlos.
-4. `reiniciarme`: al terminar el turno sale con el código 75. El guardián coloca la versión nueva y la arranca; si se cae en su primer minuto, vuelve a la anterior y ella lo sabrá al arrancar.
-
-Puedes revisar sus cambios con `git log`, `git diff`, y deshacerlos con `git checkout` o `git revert`.
-
-## Principio: acceso total, con memoria de lo que hace y vuelta atrás
-
-Orion podrá modificar **cualquier parte** de sí misma: núcleo C++, prompts, memoria, interfaz, comandos, su banco de pruebas e incluso el guardián. No se le prohíbe nada. A cambio, todo cambio deja rastro y se puede deshacer:
-
-1. **git**: cada cambio que haga es un commit con su explicación (`/versiones`, `/volver <versión>`).
-2. **Guardián**: si una versión nueva no arranca o se cae, vuelve a la última que funcionaba.
-3. **Examen de referencia** fuera de su carpeta (tuyo): no la limita, sirve para que **tú** sepas si mejora de verdad o solo parece que mejora.
-4. **Registro de mejoras** (`/mejoras`): qué cambió, puntuación antes y después, si se aceptó o se deshizo y si tocó su propio evaluador.
-
-## El ciclo
+## 1. El ciclo medido
 
 ```
-leer su código y yo.md → proponer un cambio → commit en una rama → compilar en otra carpeta
-   → pasar su banco de pruebas → ¿mejor? → sí: el guardián cambia el ejecutable y la reinicia
-                                         → no: se deshace (git) y se anota por qué
+medir la versión actual con el banco ──► proponer UN cambio (instrucciones y/o parámetros)
+          ▲                                          │
+          │                                          ▼
+   registrar en mejoras.jsonl ◄── aceptar/rechazar ◄── medir la propuesta con el banco
+                                         ▲                       │ ¿mejora?
+                                         │                       ▼
+                                         └──── ¿el examen de referencia no empeora?
 ```
 
-En Windows un `.exe` en uso no se puede sobrescribir: Orion compila en una carpeta aparte y es el guardián quien sustituye el ejecutable al reiniciarla.
+1. **Mide** su versión actual con `evaluacion/banco.json` (6 tareas: cálculo, contar y crear archivos con herramientas, leer un archivo, honestidad, razonamiento). Cada tarea se ejecuta con el agente completo, herramientas incluidas, en una carpeta temporal y con **semilla fija** (42), en un proceso aparte (`orion --evaluar`). Las mediciones se guardan en caché.
+2. **Propone un cambio**: ve sus instrucciones actuales, las tareas que falló (con su respuesta) y los intentos anteriores, y devuelve instrucciones nuevas completas, una temperatura y un máximo de herramientas por turno.
+3. **Mide la propuesta** con el banco. Si **no mejora estrictamente**, se rechaza.
+4. **Confirma con el examen de referencia** (`evaluacion/examen_referencia.json`, otras 6 tareas que nunca se usan para elegir cambios): si la propuesta lo **empeora**, se rechaza. Así se evita que se especialice en su banco a costa de lo demás.
+5. **Acepta**: escribe `prompts/sistema.md`, guarda los parámetros en `config.json` y hace **commit en git** ("Orion: mejora automática: … (banco 3/6 → 4/6, examen 5/6 → 5/6)").
+6. **Todo queda registrado** en `datos/mejoras.jsonl`: motivo, antes y después, mediciones, si se aceptó y por qué, commit. Las instrucciones de antes se guardan para poder volver.
 
-## El riesgo principal: engañarse a sí misma
+Comandos: `/mejorate` (ahora), `/mejoras` (historial), `/volver <n>` (deshace la mejora `n`: restaura sus instrucciones y parámetros, con commit).
 
-Un sistema que se optimiza a sí mismo tiende a buscar el atajo: si puede reescribir su examen, "mejora" aprobándose sola. Ya lo vimos en el demostrador anterior, donde un código podía imprimir `TODO_VERIFICADO` o redefinir `simplify` para hacer trampa. Por eso:
-- el examen de referencia está fuera de su alcance y lo ejecutas tú (o el guardián) sin que ella lo vea antes;
-- cada cambio en sus propias pruebas queda marcado en el registro;
-- una mejora solo cuenta si mejora **también** en el examen de referencia.
+**Cuándo lo hace sola:** si los permisos son `total`, lleva al menos 30 minutos sin que le hables y han pasado `automejora_cada_h` horas (12 por defecto; 0 lo desactiva). Tu mensaje la interrumpe incluso a mitad de una medición: el proceso se detiene y el ciclo se retoma más tarde.
 
-## Escalar más allá del portátil
+### Por qué las instrucciones y no el C++
 
-Orion mide su hardware y su velocidad, y lo anota en `yo.md`. Cuando necesite más, lo dirá y podrá **usar dispositivos que tú registres** (por ejemplo tu PC con RTX como segundo servidor de Ollama). Te pedirá permiso antes. No se conecta a máquinas que no sean tuyas: no es una limitación de su código, sino la frontera de qué hardware es suyo.
+Con un modelo de 3B, reescribir C++ a solas acabaría casi siempre en código que no compila o que se comporta peor sin que nadie lo note. Sus instrucciones, en cambio:
+- deciden gran parte de su comportamiento (cuándo usar herramientas, cómo responder, honestidad);
+- se pueden medir en minutos y sin recompilar;
+- un modelo pequeño las edita bien.
 
-## Recomendaciones
-- Que viva en una carpeta propia (`C:\Orion`) o, mejor, en una máquina virtual: con acceso total, un error suyo (borrar algo, llenar el disco) no debe afectar a tus archivos.
-- Haz copias de `datos/` de vez en cuando: es su memoria.
+Cuando tengas la RTX y un modelo mayor, el mismo ciclo puede extenderse a cambios de código (compilar la propuesta en `build-auto/` y medir ese ejecutable). La medición ya funciona con cualquier ejecutable: `evaluar_con_proceso`.
+
+## 2. Cambiar su código
+
+Con acceso total puede leer y modificar cualquier archivo de su repositorio y:
+1. registrar el cambio con git (`ejecutar_comando`);
+2. `compilar_nueva_version`: compila en `build-auto/` sin pararse y prueba que la versión nueva arranca;
+3. `reiniciarme`: el **guardián** coloca la versión nueva y, si se cae en su primer minuto, **vuelve a la anterior**. Ella lo sabrá al arrancar.
+
+Revisa sus cambios con `git log` y `git diff`, y deshazlos con `git revert`.
+
+## Límites (honestos)
+
+- **El banco es pequeño** (6 tareas) para que una medición no tarde horas en CPU. Una mejora de "3/6 → 4/6" puede deberse en parte al azar, aunque la semilla fija lo reduce mucho. Con la RTX conviene ampliar el banco (lo puede hacer ella, queda en git) y el examen (mejor tú).
+- **El examen no es inviolable.** Con acceso total, ella podría leerlo o modificarlo. Lo que sí es seguro:
+  - su huella SHA-256 se anota la primera vez y, si cambia, `/mejoras` lo avisa;
+  - cualquier cambio queda en git;
+  - el examen nunca se usa para elegir cambios, solo para vetarlos.
+  
+  Para un examen realmente fuera de su alcance hace falta otro usuario de Windows u otra máquina.
+- **Mejora sus instrucciones, no su inteligencia.** El techo lo pone el modelo; cambiar sus pesos es la fase 5. Los ejemplos verificados de su práctica (`datos/practica.jsonl`) serán los datos de ese entrenamiento.
+- Una medición del banco hace unas 6-12 llamadas al modelo. En el i5 eso son **10-30 minutos**; un ciclo completo (base, propuesta, examen) puede llevar una hora. Por eso lo hace cuando no le hablas y como mucho cada 12 horas.

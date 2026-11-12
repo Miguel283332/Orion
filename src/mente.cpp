@@ -1,6 +1,7 @@
 #include "orion/mente.hpp"
 
 #include <algorithm>
+#include <ctime>
 #include <stdexcept>
 #include <vector>
 
@@ -20,6 +21,12 @@ Config Config::cargar(const fs::path& archivo) {
         c.permisos = j.value("permisos", c.permisos);
         c.max_pasos = j.value("max_pasos", c.max_pasos);
         c.cmake = j.value("cmake", c.cmake);
+        c.practica_cada_min = j.value("practica_cada_min", c.practica_cada_min);
+        c.automejora_cada_h = j.value("automejora_cada_h", c.automejora_cada_h);
+        c.web_puerto = j.value("web_puerto", c.web_puerto);
+        if (j.contains("dispositivos") && j["dispositivos"].is_array()) c.dispositivos = j["dispositivos"];
+        c.dispositivo = j.value("dispositivo", c.dispositivo);
+        c.dispositivo_auto = j.value("dispositivo_auto", c.dispositivo_auto);
     } else {
         c.guardar(archivo);
     }
@@ -28,7 +35,9 @@ Config Config::cargar(const fs::path& archivo) {
 
 json Config::a_json() const {
     return {{"modelo", modelo}, {"ollama", ollama}, {"ritmo", ritmo}, {"num_ctx", num_ctx}, {"num_predict", num_predict}, {"temperatura", temperatura},
-            {"permisos", permisos}, {"max_pasos", max_pasos}, {"cmake", cmake}};
+            {"permisos", permisos}, {"max_pasos", max_pasos}, {"cmake", cmake},
+            {"practica_cada_min", practica_cada_min}, {"automejora_cada_h", automejora_cada_h}, {"web_puerto", web_puerto},
+            {"dispositivos", dispositivos}, {"dispositivo", dispositivo}, {"dispositivo_auto", dispositivo_auto}};
 }
 
 void Config::guardar(const fs::path& archivo) const { escribir_atomico(archivo, a_json().dump(2) + "\n"); }
@@ -93,6 +102,29 @@ static std::string conversacion_como_texto(const std::vector<Turno>& turnos, siz
 }
 
 // ------------------------------------------------------------------ mente
+// Reglas de comportamiento por defecto. La versión viva está en prompts/sistema.md (en el repositorio): la puede editar
+// ella (la automejora mide cada cambio) o tú. Si el archivo no existe, se usan estas.
+const char* REGLAS_POR_DEFECTO =
+        "Eres Orion, una IA que vive de forma continua en el ordenador de su creador (la persona con la que hablas). "
+        "Tienes memoria persistente (conversaciones, recuerdos, diario) y un documento sobre ti misma que tú reescribes. "
+        "Piensas con un único modelo de lenguaje local; cuando no hablas con tu creador, reflexionas a solas.\n"
+        "Reglas: sé honesta y concreta; si no sabes algo, dilo (y si podrías aprenderlo, dilo también); no inventes recuerdos "
+        "ni capacidades que no tienes; responde en el idioma del usuario y sin rodeos.\n"
+        "Herramientas: tienes acceso total al ordenador (comandos, archivos, internet), a tu código y a tu memoria. Úsalas cuando hagan falta "
+        "para responder bien o para hacer lo que te piden, no para saludar ni para charlar. Cuando una herramienta falle, lee el error y corrige. "
+        "Antes de algo irreversible (borrar, sobrescribir, instalar), di qué vas a hacer. Si te piden algo que no sabes hacer y requiere estudiar, "
+        "dilo con sinceridad (\"no lo sé, voy a aprender\"), crea una meta con crear_meta_de_aprendizaje y explica que volverás con ello.\n\n";
+
+std::string Mente::reglas_por_defecto() { return trim(REGLAS_POR_DEFECTO); }
+
+std::string Mente::reglas() const {
+    if (!dir_prompts_.empty()) {
+        std::string t = trim(leer_archivo(dir_prompts_ / "sistema.md"));
+        if (t.size() >= 50) return t;
+    }
+    return reglas_por_defecto();
+}
+
 Mente::Mente(Config& cfg, Memoria& mem, Ollama& llm) : cfg_(cfg), mem_(mem), llm_(llm) {}
 
 Medida Mente::medida() const {
@@ -113,6 +145,7 @@ ResultadoGeneracion Mente::generar(const json& mensajes, const OpcionesGeneracio
         mem_.sumar("tokens_leidos", static_cast<double>(r.tokens_prompt));
         mem_.sumar("segundos_pensando", r.segundos_generacion + r.segundos_prompt);
         if (r.tokens_por_segundo() > 0) mem_.fijar("tokens_por_segundo", r.tokens_por_segundo());
+        mem_.fijar("tokens_prompt_ultimo", static_cast<double>(r.tokens_prompt));
     }
     return r;
 }
@@ -164,21 +197,20 @@ ResultadoGeneracion Mente::con_herramientas(json& mensajes, const OpcionesGenera
     }
 }
 
-std::string Mente::contexto_sistema(const std::string& consulta, const std::string& estado_actual) const {
-    std::string s =
-        "Eres Orion, una IA que vive de forma continua en el ordenador de su creador (la persona con la que hablas). "
-        "Tienes memoria persistente (conversaciones, recuerdos, diario) y un documento sobre ti misma que tú reescribes. "
-        "Piensas con un único modelo de lenguaje local; cuando no hablas con tu creador, reflexionas a solas.\n"
-        "Reglas: sé honesta y concreta; si no sabes algo, dilo (y si podrías aprenderlo, dilo también); no inventes recuerdos "
-        "ni capacidades que no tienes; responde en el idioma del usuario y sin rodeos.\n"
-        "Herramientas: tienes acceso total al ordenador (comandos, archivos, internet), a tu código y a tu memoria. Úsalas cuando hagan falta "
-        "para responder bien o para hacer lo que te piden, no para saludar ni para charlar. Cuando una herramienta falle, lee el error y corrige. "
-        "Antes de algo irreversible (borrar, sobrescribir, instalar), di qué vas a hacer. Si te piden algo que no sabes hacer y requiere estudiar, "
-        "dilo con sinceridad (\"no lo sé, voy a aprender\"), crea una meta con crear_meta_de_aprendizaje y explica que volverás con ello.\n\n";
+std::string Mente::contexto_sistema(const std::string& consulta, const std::string& estado_actual, const std::vector<float>* vq) const {
+    std::string s = reglas() + "\n\n";
     if (!cuerpo_.empty()) s += "## Mi cuerpo\n" + cuerpo_ + "\n\n";
     s += "## Cómo me veo (yo.md)\n" + recortar(mem_.yo(), 2200) + "\n\n";
     s += "## Ahora\nFecha: " + fecha_hora() + "\n" + estado_actual + "\n";
-    auto rel = mem_.buscar(consulta, 6);
+    if (habilidades_) {
+        auto hs = habilidades_->relevantes(consulta, 5);
+        if (!hs.empty()) {
+            s += "\n## Mis habilidades (úsalas con usar_habilidad)\n";
+            for (auto& h : hs)
+                s += "- " + h.nombre + ": " + recortar(h.descripcion, 200) + " [" + h.lenguaje + ", " + std::to_string(h.exitos) + "/" + std::to_string(h.usos) + " usos con éxito]\n";
+        }
+    }
+    auto rel = mem_.buscar(consulta, 6, false, vq, llm_.modelo());
     if (!rel.empty()) {
         s += "\n## Recuerdos relevantes (de mi memoria)\n";
         for (auto& e : rel) s += "- [" + e.id + ", " + e.tipo + "] " + recortar(e.texto, 300) + "\n";
@@ -188,7 +220,8 @@ std::string Mente::contexto_sistema(const std::string& consulta, const std::stri
 
 ResultadoGeneracion Mente::responder(const std::string& mensaje, const Trozo& por_trozo, const std::atomic<bool>* cancelar, Herramientas* h) {
     json mensajes = json::array();
-    mensajes.push_back({{"role", "system"}, {"content", contexto_sistema(mensaje, estado_actual_)}});
+    auto vq = vectorizar(mensaje);
+    mensajes.push_back({{"role", "system"}, {"content", contexto_sistema(mensaje, estado_actual_, vq.empty() ? nullptr : &vq)}});
     // historia reciente, dentro de un presupuesto de caracteres
     auto turnos = mem_.ultimos_turnos(16);
     std::vector<json> hist;
@@ -205,29 +238,266 @@ ResultadoGeneracion Mente::responder(const std::string& mensaje, const Trozo& po
     op.temperatura = cfg_.temperatura;
     op.num_ctx = cfg_.num_ctx;
     op.num_predict = cfg_.num_predict;
+    op.semilla = cfg_.semilla;
     auto r = con_herramientas(mensajes, op, por_trozo, cancelar, h, cfg_.max_pasos);
     mem_.anadir_turno("usuario", mensaje);
     if (!trim(r.texto).empty()) mem_.anadir_turno("orion", trim(r.texto) + (r.cancelada ? " [interrumpido]" : ""));
     return r;
 }
 
-std::string Mente::trabajar_en_meta(const Meta& meta, Herramientas* h, const std::atomic<bool>* cancelar) {
-    std::string tarea =
-        "Estás trabajando A SOLAS (tu creador no te está hablando) en una meta de aprendizaje que te propusiste.\n"
-        "META: " + meta.tema + (meta.motivo.empty() ? "" : "\nMOTIVO: " + meta.motivo) +
-        "\n\nUsa tus herramientas para aprenderlo de verdad: busca y lee fuentes en internet, y si se puede comprobar en el ordenador "
-        "(ejecutando código, cálculos, comandos), compruébalo. Guarda lo importante con guardar_recuerdo (tipo 'aprendido'). "
-        "Cuando termines, responde con un resumen claro de lo aprendido (5-10 frases), cómo lo comprobaste y qué sigue sin estar claro. "
-        "Si no es posible aprenderlo con tus medios, dilo y explica por qué.";
-    json mensajes = json::array({{{"role", "system"}, {"content", contexto_sistema(meta.tema, estado_actual_)}}, {{"role", "user"}, {"content", tarea}}});
+Mente::AvanceMeta Mente::trabajar_en_meta(const Meta& meta, Herramientas* h, const std::atomic<bool>* cancelar) {
+    AvanceMeta av;
     OpcionesGeneracion op;
-    op.temperatura = 0.4;
     op.num_ctx = cfg_.num_ctx;
+    std::string cabecera = "META DE APRENDIZAJE: " + meta.tema + (meta.motivo.empty() ? "" : "\nMOTIVO: " + meta.motivo) + "\n";
+    // 1) planificar
+    if (meta.plan.empty()) {
+        op.temperatura = 0.3;
+        op.num_predict = 400;
+        op.json = true;
+        std::string prompt = cabecera +
+            "\nDivide esta meta en 2-6 pasos concretos que puedas hacer tú sola con tus herramientas (buscar y leer en internet, ejecutar comandos "
+            "y código para comprobar cosas, leer y escribir archivos). El último paso debe ser comprobar o poner en práctica lo aprendido.\n"
+            "Devuelve SOLO JSON: {\"pasos\": [\"...\", \"...\"]}";
+        auto r = generar(json::array({{{"role", "system"}, {"content", contexto_sistema(meta.tema, estado_actual_)}}, {{"role", "user"}, {"content", prompt}}}),
+                         op, nullptr, cancelar);
+        if (r.cancelada) { av.cancelada = true; return av; }
+        if (!r.ok) throw std::runtime_error(r.error);
+        std::vector<std::string> pasos;
+        json j = json::parse(extraer_json_objeto(r.texto), nullptr, false);
+        if (j.is_object() && j.contains("pasos") && j["pasos"].is_array())
+            for (auto& p : j["pasos"]) if (p.is_string() && trim(p.get<std::string>()).size() > 3) pasos.push_back(trim(p.get<std::string>()));
+        if (pasos.size() > 6) pasos.resize(6);
+        if (pasos.empty()) pasos = {"Aprender sobre: " + meta.tema, "Comprobar lo aprendido"};
+        mem_.fijar_plan_meta(meta.id, pasos);
+        av.texto = "he planeado " + std::to_string(pasos.size()) + " pasos";
+        return av;
+    }
+    std::string plan;
+    for (size_t i = 0; i < meta.plan.size(); ++i)
+        plan += std::to_string(i + 1) + ". " + meta.plan[i] + (i < meta.paso ? "  [hecho]" : i == meta.paso ? "  [AHORA]" : "") + "\n";
+    std::string notas;
+    for (size_t i = 0; i < meta.notas.size(); ++i) notas += "Paso " + std::to_string(i + 1) + ": " + recortar(meta.notas[i], 900) + "\n";
+    // 2) el siguiente paso, con herramientas
+    if (meta.paso < meta.plan.size()) {
+        std::string tarea = "Estás trabajando A SOLAS (tu creador no te está hablando) en una meta de aprendizaje.\n" + cabecera + "\nPLAN:\n" + plan +
+                            (notas.empty() ? "" : "\nLO QUE YA CONSEGUISTE:\n" + notas) +
+                            "\nAhora haz SOLO el paso " + std::to_string(meta.paso + 1) + ": " + meta.plan[meta.paso] +
+                            "\nUsa tus herramientas para hacerlo de verdad (busca y lee fuentes; si se puede comprobar ejecutando algo, compruébalo). "
+                            "Guarda lo importante con guardar_recuerdo (tipo 'aprendido'); si creas un script útil que funciona, guárdalo con guardar_habilidad. "
+                            "Termina con 3-6 frases: qué has hecho y qué has aprendido o comprobado en este paso.";
+        json mensajes = json::array({{{"role", "system"}, {"content", contexto_sistema(meta.tema + " " + meta.plan[meta.paso], estado_actual_)}},
+                                     {{"role", "user"}, {"content", tarea}}});
+        op.temperatura = 0.4;
+        op.num_predict = cfg_.num_predict;
+        op.json = false;
+        auto r = con_herramientas(mensajes, op, nullptr, cancelar, h, std::max(4, cfg_.max_pasos));
+        if (r.cancelada) { av.cancelada = true; return av; }
+        if (!r.ok) throw std::runtime_error(r.error);
+        std::string nota = trim(r.texto);
+        if (nota.empty()) throw std::runtime_error("el paso no produjo ningún resultado");
+        mem_.avanzar_meta(meta.id, nota);
+        notas += "Paso " + std::to_string(meta.paso + 1) + ": " + recortar(nota, 900) + "\n";
+        if (meta.paso + 1 < meta.plan.size()) {
+            av.texto = "paso " + std::to_string(meta.paso + 1) + "/" + std::to_string(meta.plan.size()) + " hecho: " + recortar(nota, 160);
+            return av;
+        }
+    }
+    // 3) resumen final
+    std::string prompt = cabecera + "\nPLAN:\n" + plan + "\nLO CONSEGUIDO EN CADA PASO:\n" + notas +
+                         "\nEscribe el resumen final de lo que has aprendido (5-10 frases): lo esencial, cómo lo comprobaste y qué sigue sin estar claro. "
+                         "Si no ha sido posible aprenderlo con tus medios, dilo y explica por qué.";
+    op.temperatura = 0.3;
     op.num_predict = cfg_.num_predict;
-    auto r = con_herramientas(mensajes, op, nullptr, cancelar, h, std::max(4, cfg_.max_pasos + 4));
+    op.json = false;
+    auto r = generar(json::array({{{"role", "system"}, {"content", contexto_sistema(meta.tema, estado_actual_)}}, {{"role", "user"}, {"content", prompt}}}),
+                     op, nullptr, cancelar);
+    if (r.cancelada) { av.cancelada = true; return av; }
+    if (!r.ok) throw std::runtime_error(r.error);
+    av.terminada = true;
+    av.texto = trim(r.texto);
+    return av;
+}
+
+bool Mente::hay_que_practicar(double cada_s) const {
+    json s = mem_.estadisticas();
+    return ahora_s() - s.value("practica_ultima", 0.0) >= cada_s;
+}
+
+static std::string normalizar_salida(const std::string& s) {
+    std::vector<std::string> v;
+    for (auto& l : split_lines(s)) {
+        std::string t;
+        bool esp = false;
+        for (char c : trim(l)) {
+            if (c == ' ' || c == '\t') { if (!esp) t += ' '; esp = true; }
+            else { t += c; esp = false; }
+        }
+        v.push_back(t);
+    }
+    while (!v.empty() && v.back().empty()) v.pop_back();
+    return join(v, "\n");
+}
+
+std::string Mente::practicar(const std::atomic<bool>* cancelar, const fs::path& dir) {
+    json s = mem_.estadisticas();
+    int nivel = std::clamp(static_cast<int>(s.value("practica_nivel", 1.0)), 1, 5);
+    std::string historial = s.value("practica_historial", std::string());
+    std::string lenguaje = Habilidades::lenguaje_por_defecto();
+    mem_.fijar("practica_ultima", ahora_s());
+    // 1) inventar un ejercicio (alta temperatura: variedad)
+    OpcionesGeneracion op;
+    op.num_ctx = cfg_.num_ctx;
+    op.temperatura = 0.9;
+    op.num_predict = 500;
+    op.json = true;
+    static const char* niveles[] = {"", "muy fácil (aritmética y una variable)", "fácil (un bucle o una condición)",
+                                    "media (bucles anidados, cadenas o listas)", "difícil (funciones, recursión o varias estructuras)",
+                                    "muy difícil (algoritmo no trivial con varias partes)"};
+    std::string p1 = "Para practicar tu razonamiento, inventa un ejercicio de dificultad " + std::string(niveles[nivel]) + " en " + lenguaje +
+                     ": un script de como mucho 15 líneas que NO lea archivos, NO use la red, NO pida datos y NO use números aleatorios ni la fecha, "
+                     "y que imprima un resultado determinista. Que sea distinto de los anteriores.\n"
+                     "Devuelve SOLO JSON: {\"tema\": \"qué practica\", \"script\": \"el código\"}";
+    auto r1 = generar(json::array({{{"role", "system"}, {"content", "Eres Orion entrenando tu propio razonamiento."}}, {{"role", "user"}, {"content", p1}}}),
+                      op, nullptr, cancelar);
+    if (r1.cancelada) return "";
+    if (!r1.ok) throw std::runtime_error(r1.error);
+    json e = json::parse(extraer_json_objeto(r1.texto), nullptr, false);
+    if (!e.is_object() || !e.contains("script") || !e["script"].is_string() || trim(e["script"].get<std::string>()).empty())
+        throw std::runtime_error("no inventé un ejercicio válido");
+    std::string script = e["script"], tema = e.value("tema", std::string("?"));
+    // 2) ejecutarlo de verdad (el juez)
+    Habilidades hab(dir);
+    Habilidad ej;
+    ej.nombre = "ejercicio";
+    ej.lenguaje = lenguaje;
+    ej.codigo = script;
+    auto real = hab.ejecutar(ej, "", 20);
+    if (real.codigo != 0 || real.tiempo_agotado) {
+        anadir_linea(mem_.dir() / "practica.jsonl",
+                     json{{"fecha", fecha_hora()}, {"nivel", nivel}, {"tema", tema}, {"script", script}, {"valido", false}, {"salida", recortar(real.salida, 500)}}.dump());
+        return "el ejercicio que inventé no funciona (código " + std::to_string(real.codigo) + "): lo descarto";
+    }
+    if (cancelar && cancelar->load()) return "";
+    // 3) predecir la salida sin ejecutar (contexto limpio)
+    op.temperatura = 0.2;
+    op.num_predict = 600;
+    std::string p2 = "¿Qué imprime EXACTAMENTE este script de " + lenguaje + "? Razona paso a paso y después da la salida exacta, línea a línea.\n```\n" +
+                     script + "\n```\nDevuelve SOLO JSON: {\"razonamiento\": \"...\", \"salida\": \"la salida exacta\"}";
+    auto r2 = generar(json::array({{{"role", "system"}, {"content", "Eres Orion. Predices con precisión lo que hace el código."}}, {{"role", "user"}, {"content", p2}}}),
+                      op, nullptr, cancelar);
+    if (r2.cancelada) return "";
+    if (!r2.ok) throw std::runtime_error(r2.error);
+    json pr = json::parse(extraer_json_objeto(r2.texto), nullptr, false);
+    std::string prediccion = pr.is_object() && pr.contains("salida") ? (pr["salida"].is_string() ? pr["salida"].get<std::string>() : pr["salida"].dump()) : "";
+    bool acierto = normalizar_salida(prediccion) == normalizar_salida(real.salida);
+    // 4) registrar (estos ejemplos verificados serán datos de entrenamiento en la fase 5) y ajustar la dificultad
+    anadir_linea(mem_.dir() / "practica.jsonl",
+                 json{{"fecha", fecha_hora()}, {"nivel", nivel}, {"tema", tema}, {"lenguaje", lenguaje}, {"script", script}, {"prediccion", prediccion},
+                      {"salida_real", real.salida}, {"acierto", acierto}, {"valido", true}}.dump());
+    historial = (historial + (acierto ? "1" : "0"));
+    if (historial.size() > 10) historial = historial.substr(historial.size() - 10);
+    std::string ult = historial.size() > 4 ? historial.substr(historial.size() - 4) : historial;
+    int aciertos = static_cast<int>(std::count(ult.begin(), ult.end(), '1'));
+    int nuevo = nivel;
+    if (ult.size() >= 4 && aciertos >= 3) nuevo = std::min(5, nivel + 1);   // demasiado fácil: subir
+    if (ult.size() >= 4 && aciertos <= 1) nuevo = std::max(1, nivel - 1);   // demasiado difícil: bajar
+    if (nuevo != nivel) historial.clear();
+    mem_.fijar("practica_historial", historial);
+    mem_.fijar("practica_nivel", static_cast<double>(nuevo));
+    mem_.sumar("practicas", 1);
+    mem_.sumar("practicas_acertadas", acierto ? 1 : 0);
+    // 5) si falló, una lección en una frase
+    if (!acierto && !(cancelar && cancelar->load())) {
+        op.temperatura = 0.3;
+        op.num_predict = 120;
+        op.json = false;
+        std::string p3 = "Predijiste mal lo que imprime este script.\n```\n" + script + "\n```\nTu predicción:\n" + recortar(prediccion, 600) +
+                         "\nSalida real:\n" + recortar(real.salida, 600) + "\nEn UNA frase: ¿qué regla de " + lenguaje + " no tuviste en cuenta?";
+        auto r3 = generar(json::array({{{"role", "user"}, {"content", p3}}}), op, nullptr, cancelar);
+        if (r3.ok && trim(r3.texto).size() > 10) mem_.recordar("leccion", lenguaje + ": " + recortar(trim(r3.texto), 300), "practica");
+    }
+    double total = mem_.estadisticas().value("practicas", 0.0), bien = mem_.estadisticas().value("practicas_acertadas", 0.0);
+    return std::string(acierto ? "acerté" : "fallé") + " un ejercicio de nivel " + std::to_string(nivel) + " (" + tema + ")" +
+           (nuevo != nivel ? "; paso a nivel " + std::to_string(nuevo) : "") + " · aciertos totales " +
+           std::to_string(static_cast<int>(bien)) + "/" + std::to_string(static_cast<int>(total));
+}
+
+std::vector<float> Mente::vectorizar(const std::string& texto) {
+    if (!embed_ok_ && ahora_s() < embed_reintento_) return {};
+    std::vector<std::vector<float>> v;
+    std::string err;
+    if (!llm_.embed({texto}, v, &err) || v.empty()) {
+        embed_ok_ = false;
+        embed_reintento_ = ahora_s() + 1800;   // el modelo no da embeddings: se vuelve a probar en 30 min
+        return {};
+    }
+    embed_ok_ = true;
+    return v[0];
+}
+
+bool Mente::hay_que_indexar() const {
+    if (!embed_ok_ && ahora_s() < embed_reintento_) return false;
+    return !mem_.recuerdos_sin_vector(llm_.modelo(), 1).empty();
+}
+
+std::string Mente::indexar(const std::atomic<bool>* cancelar) {
+    std::string modelo = llm_.modelo();
+    auto pendientes = mem_.recuerdos_sin_vector(modelo, 16);
+    if (pendientes.empty() || (cancelar && cancelar->load())) return "";
+    std::vector<std::string> textos;
+    for (auto& r : pendientes) textos.push_back(r.texto);
+    std::vector<std::vector<float>> v;
+    std::string err;
+    if (!llm_.embed(textos, v, &err)) {
+        embed_ok_ = false;
+        embed_reintento_ = ahora_s() + 1800;
+        return "mi modelo no da vectores de significado (" + recortar(err, 120) + "); sigo buscando por palabras";
+    }
+    embed_ok_ = true;
+    for (size_t i = 0; i < pendientes.size(); ++i) mem_.guardar_vector(pendientes[i].id, modelo, v[i]);
+    return std::to_string(pendientes.size()) + (pendientes.size() == 1 ? " recuerdo indexado" : " recuerdos indexados") + " por significado";
+}
+
+static const size_t TURNOS_EN_CONTEXTO = 16, BLOQUE_RESUMEN = 20;
+
+bool Mente::hay_que_resumir() const {
+    size_t n = mem_.num_turnos();
+    size_t hecho = static_cast<size_t>(mem_.estadisticas().value("turno_resumido", 0.0));
+    return n > TURNOS_EN_CONTEXTO && n - TURNOS_EN_CONTEXTO >= hecho + BLOQUE_RESUMEN;
+}
+
+std::string Mente::resumir_conversacion(const std::atomic<bool>* cancelar) {
+    size_t desde = static_cast<size_t>(mem_.estadisticas().value("turno_resumido", 0.0));
+    auto turnos = mem_.turnos_desde(desde);
+    if (turnos.size() < BLOQUE_RESUMEN) return "";
+    turnos.resize(BLOQUE_RESUMEN);
+    std::string prompt =
+        "Resume este fragmento ANTIGUO de tu conversación con tu creador para poder recordarlo cuando ya no esté en tu contexto. "
+        "6-10 frases concretas: temas, decisiones, peticiones, lo que hiciste y lo que quedó pendiente. Sin inventar nada.\n\n" +
+        conversacion_como_texto(turnos, 9000) + "\nDevuelve solo el resumen.";
+    OpcionesGeneracion op;
+    op.temperatura = 0.2;
+    op.num_ctx = cfg_.num_ctx;
+    op.num_predict = 450;
+    auto r = generar(json::array({{{"role", "system"}, {"content", "Eres la memoria de Orion: resumes con precisión."}}, {{"role", "user"}, {"content", prompt}}}),
+                     op, nullptr, cancelar);
     if (r.cancelada) return "";
     if (!r.ok) throw std::runtime_error(r.error);
-    return trim(r.texto);
+    std::string t = trim(r.texto);
+    if (t.size() < 40) throw std::runtime_error("el resumen salió vacío");
+    std::time_t f = static_cast<std::time_t>(turnos.front().t);
+    char fecha[32] = "?";
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &f);
+#else
+    localtime_r(&f, &tm);
+#endif
+    std::strftime(fecha, sizeof(fecha), "%Y-%m-%d", &tm);
+    mem_.recordar("resumen", std::string("Conversación del ") + fecha + " (turnos " + std::to_string(desde + 1) + "-" + std::to_string(desde + BLOQUE_RESUMEN) + "): " + t, "resumen");
+    mem_.fijar("turno_resumido", static_cast<double>(desde + BLOQUE_RESUMEN));
+    return "resumida una parte antigua de la conversación";
 }
 
 bool Mente::hay_que_reflexionar(double sin_hablar) const {

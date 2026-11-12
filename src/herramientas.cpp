@@ -1,6 +1,7 @@
 #include "orion/herramientas.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 
 #include "orion/sistema.hpp"
@@ -51,7 +52,7 @@ Herramientas::Herramientas(ContextoHerramientas c) : c_(std::move(c)) {}
 std::vector<std::string> Herramientas::nombres(const std::string& permisos) {
     std::vector<std::string> memoria = {"guardar_recuerdo", "buscar_en_memoria", "crear_meta_de_aprendizaje"};
     std::vector<std::string> lectura = {"leer_archivo", "listar_directorio", "buscar_en_internet", "leer_pagina_web"};
-    std::vector<std::string> total = {"ejecutar_comando", "escribir_archivo", "compilar_nueva_version", "reiniciarme"};
+    std::vector<std::string> total = {"ejecutar_comando", "escribir_archivo", "guardar_habilidad", "usar_habilidad", "compilar_nueva_version", "reiniciarme"};
     std::vector<std::string> r = memoria;
     if (permisos == "lectura" || permisos == "total") r.insert(r.end(), lectura.begin(), lectura.end());
     if (permisos == "total") r.insert(r.end(), total.begin(), total.end());
@@ -85,6 +86,15 @@ json Herramientas::definiciones() const {
         funcion("crear_meta_de_aprendizaje",
                 "Crea una meta para aprender algo que no sabes. Trabajarás en ella a solas (con tus herramientas) cuando no te hablen, y avisarás al terminar.",
                 {{"tema", texto("qué vas a aprender")}, {"motivo", texto("por qué / quién lo pidió")}}, {"tema"}),
+        funcion("guardar_habilidad",
+                "Guarda como habilidad reutilizable un script que YA te ha funcionado (se prueba antes de guardarlo). Úsalo cuando resuelvas algo "
+                "que te pueden volver a pedir.",
+                {{"nombre", texto("nombre corto en minúsculas con _ (p. ej. resumir_pdf)")}, {"descripcion", texto("qué hace y qué argumentos recibe")},
+                 {"lenguaje", texto(Habilidades::lenguaje_por_defecto() == "powershell" ? "powershell (por defecto) o cmd" : "sh")},
+                 {"codigo", texto("el script completo")}, {"prueba", texto("argumentos para probarlo (puede ir vacío)")}},
+                {"nombre", "descripcion", "codigo"}),
+        funcion("usar_habilidad", "Ejecuta una de tus habilidades guardadas.",
+                {{"nombre", texto("nombre de la habilidad")}, {"argumentos", texto("argumentos (opcional)")}}, {"nombre"}),
         funcion("compilar_nueva_version",
                 "Compila tu código fuente actual (después de modificarlo) en una versión nueva, sin pararte. Si compila, queda lista para aplicarse con reiniciarme.",
                 json::object(), {}),
@@ -212,7 +222,9 @@ std::string Herramientas::usar_sin_registro(const std::string& nombre, const jso
     }
     if (nombre == "buscar_en_memoria") {
         if (!c_.memoria) return "Sin memoria.";
-        auto rs = c_.memoria->buscar(arg_str(a, "consulta"), 8, true);
+        std::string q = arg_str(a, "consulta");
+        std::vector<float> vq = c_.vectorizar ? c_.vectorizar(q) : std::vector<float>{};
+        auto rs = c_.memoria->buscar(q, 8, true, vq.empty() ? nullptr : &vq, c_.modelo);
         if (rs.empty()) return "No encuentro nada.";
         std::string s;
         for (auto& e : rs) s += "[" + e.id + "] " + recortar(e.texto, 300) + "\n";
@@ -224,6 +236,20 @@ std::string Herramientas::usar_sin_registro(const std::string& nombre, const jso
         if (trim(tema).empty()) return "Falta 'tema'.";
         std::string id = c_.memoria->crear_meta(tema, arg_str(a, "motivo"));
         return "Meta " + id + " creada: '" + tema + "'. Trabajaré en ella a solas y avisaré al terminar.";
+    }
+    if (nombre == "guardar_habilidad") {
+        if (!c_.habilidades) return "Sin biblioteca de habilidades.";
+        Habilidad h;
+        h.nombre = arg_str(a, "nombre");
+        h.descripcion = arg_str(a, "descripcion");
+        h.lenguaje = arg_str(a, "lenguaje", Habilidades::lenguaje_por_defecto());
+        h.codigo = arg_str(a, "codigo");
+        h.prueba = arg_str(a, "prueba");
+        return c_.habilidades->guardar(h);
+    }
+    if (nombre == "usar_habilidad") {
+        if (!c_.habilidades) return "Sin biblioteca de habilidades.";
+        return c_.habilidades->usar(arg_str(a, "nombre"), arg_str(a, "argumentos"));
     }
     if (nombre == "compilar_nueva_version") {
         if (c_.repo.empty() || !fs::exists(c_.repo / "CMakeLists.txt")) return "No encuentro mi código fuente (arranca Orion desde la carpeta del repositorio o usa --repo).";

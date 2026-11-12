@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "orion/habilidades.hpp"
 #include "orion/memoria.hpp"
 
 namespace orion {
@@ -17,11 +18,14 @@ struct ContextoHerramientas {
     fs::path datos;
     fs::path repo;                                   // su código fuente (vacío si no se conoce)
     Memoria* memoria = nullptr;
+    Habilidades* habilidades = nullptr;
     std::string permisos = "total";                  // total | lectura | ninguno
     std::string origen = "chat";                     // chat | meta (para el registro)
     std::function<void(const std::string&)> aviso;   // mostrar en la terminal lo que hace
     std::atomic<bool>* reinicio_pedido = nullptr;
     std::string cmake = "cmake";
+    std::function<std::vector<float>(const std::string&)> vectorizar;   // para buscar por significado (opcional)
+    std::string modelo;
 };
 
 class Herramientas {

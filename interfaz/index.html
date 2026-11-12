@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orion</title>
+<style>
+  :root { --fondo:#f6f7f9; --panel:#ffffff; --texto:#1d2129; --tenue:#6b7280; --borde:#e2e5ea; --acento:#2563eb; --ok:#15803d; --mal:#b91c1c; --codigo:#f1f3f6; --sobre-acento:#ffffff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fondo:#0f1115; --panel:#171a21; --texto:#e6e8eb; --tenue:#9aa1ad; --borde:#2a2f3a; --acento:#60a5fa; --ok:#4ade80; --mal:#f87171; --codigo:#1e222b; --sobre-acento:#0b1220; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--fondo); color:var(--texto); font:15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:10px 16px; border-bottom:1px solid var(--borde); background:var(--panel); }
+  header h1 { font-size:18px; margin:0; letter-spacing:.5px; }
+  #actividad { color:var(--tenue); font-size:13px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .punto { width:9px; height:9px; border-radius:50%; background:var(--ok); display:inline-block; }
+  .punto.ocupada { background:var(--acento); animation: latido 1.2s infinite; }
+  @keyframes latido { 50% { opacity:.35; } }
+  main { display:grid; grid-template-columns: minmax(0, 1fr) 360px; gap:12px; padding:12px; height: calc(100vh - 52px); }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; height:auto; } #lateral { max-height:none; } }
+  .panel { background:var(--panel); border:1px solid var(--borde); border-radius:10px; display:flex; flex-direction:column; min-height:0; }
+  #registro { flex:1; overflow-y:auto; padding:12px 14px; white-space:pre-wrap; word-wrap:break-word; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size:13.5px; min-height:300px; }
+  .linea-orion { color:var(--texto); }
+  .linea-nota { color:var(--tenue); }
+  .linea-tu { color:var(--acento); font-weight:600; }
+  .linea-estrella { color:var(--ok); font-weight:600; }
+  form { display:flex; gap:8px; padding:10px; border-top:1px solid var(--borde); }
+  #entrada { flex:1; padding:9px 11px; border-radius:8px; border:1px solid var(--borde); background:var(--fondo); color:var(--texto); font:inherit; }
+  button { padding:8px 14px; border-radius:8px; border:1px solid var(--borde); background:var(--acento); color:var(--sobre-acento); font:inherit; cursor:pointer; }
+  button.secundario { background:transparent; color:var(--texto); }
+  #lateral { display:flex; flex-direction:column; gap:12px; overflow-y:auto; max-height: calc(100vh - 76px); }
+  .bloque { padding:10px 14px; }
+  .bloque h2 { font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--tenue); margin:2px 0 8px; }
+  .fila { display:flex; justify-content:space-between; gap:8px; font-size:14px; padding:2px 0; }
+  .fila span:first-child { color:var(--tenue); }
+  .lista { font-size:13.5px; }
+  .lista div { padding:5px 0; border-top:1px solid var(--borde); }
+  .lista div:first-child { border-top:none; }
+  .etq { font-size:11.5px; padding:1px 6px; border-radius:6px; background:var(--codigo); color:var(--tenue); margin-right:4px; }
+  .ok { color:var(--ok); } .mal { color:var(--mal); }
+  .botones { display:flex; flex-wrap:wrap; gap:6px; }
+  .botones button { padding:5px 10px; font-size:13px; }
+  #aviso { display:none; padding:10px 14px; color:var(--mal); }
+</style>
+</head>
+<body>
+<header>
+  <span class="punto" id="punto"></span>
+  <h1>Orion</h1>
+  <div id="actividad">conectando…</div>
+</header>
+<div id="aviso" class="panel"></div>
+<main>
+  <section class="panel">
+    <div id="registro" aria-live="polite"></div>
+    <form id="formulario">
+      <input id="entrada" autocomplete="off" placeholder="Escribe un mensaje o un /comando…">
+      <button type="submit">Enviar</button>
+    </form>
+  </section>
+  <aside id="lateral">
+    <div class="panel bloque"><h2>Estado</h2><div id="estado"></div>
+      <div class="botones" style="margin-top:8px">
+        <button class="secundario" data-cmd="/pausa">Pausa</button><button class="secundario" data-cmd="/sigue">Seguir</button>
+        <button class="secundario" data-cmd="/reflexiona">Reflexionar</button><button class="secundario" data-cmd="/mejorate">Mejorarse</button>
+        <button class="secundario" data-cmd="/practica ahora">Practicar</button><button class="secundario" data-cmd="/para">Parar respuesta</button>
+      </div>
+    </div>
+    <div class="panel bloque"><h2>Metas</h2><div id="metas" class="lista"></div></div>
+    <div class="panel bloque"><h2>Automejora</h2><div id="mejoras" class="lista"></div></div>
+    <div class="panel bloque"><h2>Últimas acciones</h2><div id="acciones" class="lista"></div></div>
+    <div class="panel bloque"><h2>Recuerdos recientes</h2><div id="recuerdos" class="lista"></div></div>
+  </aside>
+</main>
+<script>
+const token = new URLSearchParams(location.search).get("t") || "";
+const cab = { "X-Orion-Token": token, "Content-Type": "application/json" };
+let desde = 0;
+const registro = document.getElementById("registro");
+
+async function api(ruta, cuerpo) {
+  const r = await fetch(ruta, cuerpo === undefined ? { headers: cab } : { method: "POST", headers: cab, body: JSON.stringify(cuerpo) });
+  if (r.status === 403) throw new Error("token");
+  return r.json();
+}
+function esc(t) { return String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function clase(l) {
+  if (l.startsWith("  · ")) return "linea-nota";
+  if (l.startsWith("Tú")) return "linea-tu";
+  if (l.startsWith("★")) return "linea-estrella";
+  return "linea-orion";
+}
+let pendiente = "";
+function pintar(texto) {
+  const abajo = registro.scrollHeight - registro.scrollTop - registro.clientHeight < 40;
+  pendiente += texto;
+  const partes = pendiente.split("\n");
+  pendiente = partes.pop();
+  for (const l of partes) {
+    const d = document.createElement("div");
+    d.className = clase(l);
+    d.textContent = l;
+    registro.appendChild(d);
+  }
+  let vivo = document.getElementById("vivo");
+  if (!vivo) { vivo = document.createElement("div"); vivo.id = "vivo"; vivo.className = "linea-orion"; }
+  registro.appendChild(vivo);
+  vivo.textContent = pendiente;
+  while (registro.childElementCount > 1500) registro.removeChild(registro.firstChild);
+  if (abajo) registro.scrollTop = registro.scrollHeight;
+}
+async function eventos() {
+  try {
+    const r = await api("/api/eventos?desde=" + desde);
+    if (r.texto) pintar(r.texto);
+    desde = r.siguiente;
+    document.getElementById("aviso").style.display = "none";
+  } catch (e) {
+    const a = document.getElementById("aviso");
+    a.style.display = "block";
+    a.textContent = e.message === "token" ? "Token no válido: abre la dirección que muestra Orion al arrancar (/web)." : "Sin conexión con Orion. ¿Está en marcha?";
+  }
+  setTimeout(eventos, 700);
+}
+function fila(k, v) { return `<div class="fila"><span>${esc(k)}</span><span>${esc(v)}</span></div>`; }
+async function estado() {
+  try {
+    const e = await api("/api/estado");
+    document.getElementById("actividad").textContent = e.actividad + (e.pausado ? " (pausa)" : "");
+    document.getElementById("punto").className = "punto" + (e.actividad !== "en reposo" && e.actividad !== "en pausa" ? " ocupada" : "");
+    document.getElementById("estado").innerHTML =
+      fila("Modelo", e.modelo + (e.parametros ? " · " + e.parametros : "")) + fila("Dónde", e.dispositivo) +
+      fila("Velocidad", e.tokens_por_segundo.toFixed(1) + " tokens/s") + fila("Memoria", e.recuerdos + " recuerdos · " + e.turnos + " turnos") +
+      fila("Habilidades", e.habilidades) + fila("Práctica", "nivel " + e.practica_nivel + " · " + e.practica_aciertos) +
+      fila("Permisos", e.permisos) + fila("Ritmo", e.ritmo) + fila("Encendida", e.encendida);
+  } catch (e) {}
+  setTimeout(estado, 2500);
+}
+async function lateral() {
+  try {
+    const m = await api("/api/metas");
+    document.getElementById("metas").innerHTML = m.length ? m.slice(-8).reverse().map(x =>
+      `<div><span class="etq">${esc(x.id)}</span><span class="${x.estado === "hecha" ? "ok" : x.estado === "fallida" ? "mal" : ""}">${esc(x.estado)}</span> ${esc(x.tema)}` +
+      (x.plan && x.plan.length && x.estado === "pendiente" ? ` <span class="etq">paso ${Math.min(x.paso + 1, x.plan.length)}/${x.plan.length}</span>` : "") + `</div>`).join("") : "<div>Sin metas.</div>";
+    const h = await api("/api/mejoras");
+    document.getElementById("mejoras").innerHTML = h.length ? h.slice(-6).reverse().map(x => x.tipo === "vuelta"
+      ? `<div><span class="etq">#${x.n}</span>↩ ${esc(x.motivo)}</div>`
+      : `<div><span class="etq">#${x.n}</span><span class="${x.aceptada ? "ok" : "mal"}">${x.aceptada ? "aceptada" : "rechazada"}</span> ${esc(x.motivo || "")}<br><span class="etq">banco ${esc(x.banco_antes || "?")} → ${esc(x.banco_despues || "—")}</span>${x.examen_antes ? `<span class="etq">examen ${esc(x.examen_antes)} → ${esc(x.examen_despues)}</span>` : ""}</div>`).join("") : "<div>Aún no se ha mejorado.</div>";
+    const a = await api("/api/acciones?n=8");
+    document.getElementById("acciones").innerHTML = a.length ? a.reverse().map(x =>
+      `<div><span class="etq">${esc(x.herramienta)}</span>${esc(JSON.stringify(x.argumentos || {}).slice(0, 90))}</div>`).join("") : "<div>Sin acciones.</div>";
+    const r = await api("/api/recuerdos?n=8");
+    document.getElementById("recuerdos").innerHTML = r.length ? r.reverse().map(x =>
+      `<div><span class="etq">${esc(x.tipo)}</span>${esc(x.texto)}</div>`).join("") : "<div>Sin recuerdos.</div>";
+  } catch (e) {}
+  setTimeout(lateral, 8000);
+}
+async function enviar(texto) {
+  if (!texto.trim()) return;
+  try {
+    const r = await api("/api/mensaje", { texto });
+    if (r.respuesta) pintar("\n" + r.respuesta + "\n");
+  } catch (e) {}
+}
+document.getElementById("formulario").addEventListener("submit", ev => {
+  ev.preventDefault();
+  const i = document.getElementById("entrada");
+  enviar(i.value);
+  i.value = "";
+});
+document.querySelectorAll("[data-cmd]").forEach(b => b.addEventListener("click", () => enviar(b.dataset.cmd)));
+eventos(); estado(); lateral();
+</script>
+</body>
+</html>

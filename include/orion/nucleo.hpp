@@ -8,10 +8,13 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 
+#include "orion/automejora.hpp"
+#include "orion/habilidades.hpp"
 #include "orion/mente.hpp"
 #include "orion/sistema.hpp"
 
@@ -26,6 +29,8 @@ struct OpcionesNucleo {
     bool color = true;
     double gracia_s = 20;              // segundos de silencio antes de ponerse a pensar a solas
     std::function<void(int)> terminar; // cómo terminar el proceso (reinicio pedido por ella); vacío = salir del bucle
+    fs::path prompts;                  // sus instrucciones (prompts/sistema.md); vacío = las de por defecto
+    fs::path ejecutable;               // su propio ejecutable (para medirse)
 };
 
 class Nucleo {
@@ -46,6 +51,12 @@ public:
     Memoria& memoria() { return mem_; }
     Mente& mente() { return mente_; }
     std::string actividad() const;
+    std::string url_web() const;                     // "" si la interfaz web no está activa
+    RespuestaServidor atender_web(const PeticionHttp& p);   // público para poder probarlo
+    // Escalado: revisa los dispositivos registrados (se pasa al más rápido, vuelve al local si cae). Devuelve lo que hizo.
+    std::string revisar_dispositivos();
+    // Detecta si el hardware la limita y, como mucho una vez al día, lo dice. Devuelve el aviso ("" si no hay).
+    std::string evaluar_limites(bool forzar = false);
 
 private:
     void bucle_mente();
@@ -68,13 +79,30 @@ private:
     Salida salida_;
     Memoria mem_;
     Ollama llm_;
+    Habilidades habilidades_;
     Mente mente_;
+    Automejora automejora_;
     std::mutex mu_salida_, mu_;
     bool linea_abierta_ = false, prefijo_pendiente_ = false;   // estado de la línea "Orion> ..." (protegido por mu_salida_)
     std::condition_variable cv_;
     std::deque<std::string> cola_;
     std::atomic<bool> salir_{false}, pausado_{false}, cancelar_fondo_{false}, cancelar_chat_{false}, ocupado_{false};
-    std::atomic<bool> reflexion_pedida_{false}, reinicio_pedido_{false}, parado_{false};
+    std::atomic<bool> reflexion_pedida_{false}, reinicio_pedido_{false}, parado_{false}, practica_pedida_{false}, mejora_pedida_{false};
+    bool mejorarse(bool forzada);
+    void registrar_evento(const std::string& t);
+    double medir_velocidad(const std::string& url, const std::string& modelo, std::string* error);
+    bool dispositivo(const std::string& nombre, json& d);
+    void usar_dispositivo(const std::string& nombre, const std::string& url, const std::string& modelo);
+    double ultima_revision_ = 0;
+    std::string comando_sin_bloqueo(const std::string& linea);
+    void iniciar_web();
+    json estado_json();
+    std::unique_ptr<ServidorHttp> web_;
+    std::string token_web_;
+    int puerto_web_ = 0;
+    std::mutex mu_ev_, mu_cmd_;
+    std::string eventos_;
+    long long base_eventos_ = 0;
     std::atomic<int> ritmo_{1};
     std::string modelo_pendiente_;
     InfoModelo modelo_cache_;

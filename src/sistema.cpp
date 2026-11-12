@@ -1,5 +1,6 @@
 #include "orion/sistema.hpp"
 
+#include <chrono>
 #include <thread>
 
 #ifdef _WIN32
@@ -104,7 +105,8 @@ static const size_t MAX_SALIDA = 1 << 20;   // 1 MB: suficiente y evita llenar l
 
 #ifdef _WIN32
 // Ejecuta una línea de comandos ya construida. Usa un "job" para poder matar también a los procesos hijos.
-static ResultadoProceso ejecutar_win(std::wstring cmd, const fs::path& dir, int timeout_s, const std::string& entrada, const std::string& nombre) {
+static ResultadoProceso ejecutar_win(std::wstring cmd, const fs::path& dir, int timeout_s, const std::string& entrada, const std::string& nombre,
+                                     const std::atomic<bool>* cancelar = nullptr) {
     ResultadoProceso r;
     SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
     HANDLE lectura = nullptr, escritura = nullptr;
@@ -153,8 +155,13 @@ static ResultadoProceso ejecutar_win(std::wstring cmd, const fs::path& dir, int 
         while (ReadFile(lectura, buf, sizeof(buf), &n, nullptr) && n > 0)
             if (salida.size() < MAX_SALIDA) salida.append(buf, n);
     });
-    if (WaitForSingleObject(pi.hProcess, static_cast<DWORD>(timeout_s) * 1000) == WAIT_TIMEOUT) {
-        r.tiempo_agotado = true;
+    auto limite = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_s);
+    bool matar = false;
+    while (WaitForSingleObject(pi.hProcess, 200) == WAIT_TIMEOUT) {
+        if (cancelar && cancelar->load()) { r.cancelado = true; matar = true; break; }
+        if (std::chrono::steady_clock::now() > limite) { r.tiempo_agotado = true; matar = true; break; }
+    }
+    if (matar) {
         if (job) TerminateJobObject(job, 1);
         else TerminateProcess(pi.hProcess, 1);
         WaitForSingleObject(pi.hProcess, 5000);
@@ -171,7 +178,8 @@ static ResultadoProceso ejecutar_win(std::wstring cmd, const fs::path& dir, int 
     return r;
 }
 #else
-static ResultadoProceso ejecutar_posix(const std::vector<std::string>& args, const fs::path& dir, int timeout_s, const std::string& entrada) {
+static ResultadoProceso ejecutar_posix(const std::vector<std::string>& args, const fs::path& dir, int timeout_s, const std::string& entrada,
+                                       const std::atomic<bool>* cancelar = nullptr) {
     ResultadoProceso r;
     int tubo[2], ent[2];
     if (pipe(tubo) != 0) return r;
@@ -214,11 +222,16 @@ static ResultadoProceso ejecutar_posix(const std::vector<std::string>& args, con
             ssize_t leidos = read(tubo[0], buf, sizeof(buf));
             if (leidos <= 0) break;
             if (r.salida.size() < MAX_SALIDA) r.salida.append(buf, static_cast<size_t>(leidos));
-            continue;
+            if (!(cancelar && cancelar->load())) continue;
         }
         if (n < 0 && errno != EINTR) break;
         if (!terminado && waitpid(pid, &st, WNOHANG) == pid) terminado = true;
         if (terminado) break;   // ya terminó y no queda nada que leer (aunque un nieto mantenga la tubería abierta)
+        if (cancelar && cancelar->load()) {
+            kill(-pid, SIGKILL);
+            r.cancelado = true;
+            break;
+        }
         if (std::chrono::steady_clock::now() > limite) {
             kill(-pid, SIGKILL);
             r.tiempo_agotado = true;
@@ -232,12 +245,13 @@ static ResultadoProceso ejecutar_posix(const std::vector<std::string>& args, con
 }
 #endif
 
-ResultadoProceso ejecutar_proceso(const std::vector<std::string>& args, const fs::path& dir, int timeout_s, const std::string& entrada) {
+ResultadoProceso ejecutar_proceso(const std::vector<std::string>& args, const fs::path& dir, int timeout_s, const std::string& entrada,
+                                  const std::atomic<bool>* cancelar) {
     if (args.empty()) return {};
 #ifdef _WIN32
-    return ejecutar_win(linea_de_comandos(args), dir, timeout_s, entrada, args[0]);
+    return ejecutar_win(linea_de_comandos(args), dir, timeout_s, entrada, args[0], cancelar);
 #else
-    return ejecutar_posix(args, dir, timeout_s, entrada);
+    return ejecutar_posix(args, dir, timeout_s, entrada, cancelar);
 #endif
 }
 

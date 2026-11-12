@@ -6,6 +6,7 @@
 #include <mutex>
 #include <thread>
 
+#include "orion/evaluacion.hpp"
 #include "orion/nucleo.hpp"
 
 using namespace orion;
@@ -27,6 +28,11 @@ struct OllamaSimulado {
     std::atomic<int> pausa_ms{0};
     std::atomic<int> trozos_extra{0};   // para respuestas largas (probar cancelación)
     std::atomic<bool> sin_herramientas{false};   // simular un modelo que no admite herramientas
+    std::atomic<bool> sin_embeddings{false};
+    std::string practica_script = "echo $((2 + 3))", practica_prediccion = "5";
+    int embeds = 0;
+    std::atomic<long long> duracion_ns{500000000};   // tiempo de generación que declara (para simular un ordenador más rápido)
+    void parar() { srv.parar(); }
     ServidorHttp srv;
     int puerto = 0;
 
@@ -47,6 +53,26 @@ struct OllamaSimulado {
         if (p.ruta == "/api/show") {
             r.trozos = {R"({"details":{"family":"qwen2","parameter_size":"3.1B","quantization_level":"Q4_K_M"},
                           "model_info":{"general.parameter_count":3085938688,"qwen2.context_length":32768}})"};
+            return r;
+        }
+        if (p.ruta == "/api/embed") {
+            if (sin_embeddings) { r.estado = 400; r.trozos = {R"({"error":"this model does not support embeddings"})"}; return r; }
+            json e = json::parse(p.cuerpo);
+            json out = json::array();
+            for (auto& t : e["input"]) {   // "significado" de juguete: palabras a 32 dimensiones, con sinónimos
+                std::vector<double> v(32, 0.1);
+                for (auto w : palabras(t.get<std::string>())) {
+                    if (w == "ciencia" || w == "fisica") w = "fisica";
+                    if (w == "universo" || w == "cosmos") w = "cosmos";
+                    v[std::hash<std::string>{}(w) % 32] += 1.0;
+                }
+                out.push_back(v);
+            }
+            {
+                std::lock_guard<std::mutex> l(mu);
+                embeds++;
+            }
+            r.trozos = {json{{"embeddings", out}}.dump()};
             return r;
         }
         if (p.ruta == "/api/ps") { r.trozos = {R"({"models":[{"name":"qwen2.5:3b","size":2400000000,"size_vram":0}]})"}; return r; }
@@ -85,6 +111,23 @@ struct OllamaSimulado {
             }
         }
         if (!texto.empty()) {
+        } else if (contiene(todo, "Propón UNA mejora")) {
+            std::string extra = contiene(todo, "RESPONDE CON NÚMEROS") ? "SOLO NÚMEROS." : "RESPONDE CON NÚMEROS cuando te pidan un cálculo.";
+            std::string base = Mente::reglas_por_defecto();
+            if (contiene(todo, "RESPONDE CON NÚMEROS")) base += "\nRESPONDE CON NÚMEROS cuando te pidan un cálculo.";
+            texto = json{{"motivo", "añadir: " + extra}, {"sistema", base + "\n" + extra}, {"temperatura", 0.5}, {"max_pasos", 8}}.dump();
+        } else if (contiene(todo, "Divide esta meta")) {
+            texto = R"({"pasos": ["Buscar información sobre el tema", "Comprobar lo aprendido"]})";
+        } else if (contiene(todo, "Escribe el resumen final")) {
+            texto = "Resumen final: aprendí lo esencial y lo comprobé.";
+        } else if (contiene(todo, "inventa un ejercicio")) {
+            texto = json{{"tema", "suma"}, {"script", practica_script}}.dump();
+        } else if (contiene(todo, "imprime EXACTAMENTE")) {
+            texto = json{{"razonamiento", "suma"}, {"salida", practica_prediccion}}.dump();
+        } else if (contiene(todo, "Predijiste mal")) {
+            texto = "Olvidé que echo añade un salto de línea.";
+        } else if (contiene(todo, "fragmento ANTIGUO")) {
+            texto = "Hablamos de física y del proyecto Orion en C++. Quedó pendiente compilarlo en Windows.";
         } else if (contiene(todo, "extrae los hechos")) {
             texto = R"({"recuerdos":[{"tipo":"usuario","texto":"Mi creador se llama Ana y estudia gravedad cuántica de bucles."}]})";
         } else if (contiene(todo, "entrada breve de tu diario")) {
@@ -93,14 +136,17 @@ struct OllamaSimulado {
             texto = "# Quién soy\n\nSoy Orion, versión revisada.\n\n## Qué sé hacer\n- Conversar y recordar.\n\n## Mis límites\n- Corro en CPU a pocos "
                     "tokens por segundo.\n\n## Qué quiero aprender\n- Física.\n\n## Cambios\n- Añadidos mis límites de hardware medidos.\n";
         } else {
-            texto = contiene(pet["messages"][0]["content"].get<std::string>(), "Ana") ? "Te recuerdo, Ana. Soy Orion." : "Hola, soy Orion (simulado).";
+            std::string sys = msgs[0].value("content", std::string());
+            if (contiene(sys, "SOLO NÚMEROS")) texto = contiene(ultimo, "2 + 2") ? "4" : contiene(ultimo, "17") ? "391" : "0";
+            else if (contiene(sys, "RESPONDE CON NÚMEROS") && contiene(ultimo, "17 multiplicado")) texto = "391";
+            else texto = contiene(pet["messages"][0]["content"].get<std::string>(), "Ana") ? "Te recuerdo, Ana. Soy Orion." : "Hola, soy Orion (simulado).";
             for (int i = 0; i < trozos_extra; ++i) texto += " bla";
         }
         r.tipo = "application/x-ndjson";
         r.pausa_ms = pausa_ms;
         auto partes = trocear(texto);
         for (auto& t : partes) r.trozos.push_back(json{{"message", {{"role", "assistant"}, {"content", t}}}, {"done", false}}.dump() + "\n");
-        r.trozos.push_back(json{{"done", true}, {"eval_count", partes.size()}, {"eval_duration", 500000000}, {"prompt_eval_count", 40},
+        r.trozos.push_back(json{{"done", true}, {"eval_count", partes.size()}, {"eval_duration", duracion_ns.load()}, {"prompt_eval_count", 40},
                                 {"prompt_eval_duration", 100000000}}.dump() + "\n");
         return r;
     }
@@ -244,6 +290,7 @@ static void t_nucleo() {
     DirTemporal d;
     Config cfg;
     cfg.ollama = sim.url();
+    cfg.web_puerto = 0;
     OpcionesNucleo op;
     op.datos = d.p;
     op.color = false;
@@ -300,6 +347,7 @@ static void t_interrupcion() {
     DirTemporal d;
     Config cfg;
     cfg.ollama = sim.url();
+    cfg.web_puerto = 0;
     OpcionesNucleo op;
     op.datos = d.p;
     op.color = false;
@@ -337,14 +385,14 @@ static void t_interrupcion() {
 static void t_ejecutables() {
     OllamaSimulado sim;
     DirTemporal d;
-    auto r = ejecutar_proceso({ORION_EXE, "--datos", d.p.string(), "--ollama", sim.url(), "--sin-autonomia"}, {}, 60,
+    auto r = ejecutar_proceso({ORION_EXE, "--datos", d.p.string(), "--ollama", sim.url(), "--sin-autonomia", "--web-puerto", "0"}, {}, 60,
                               "hola\n/memoria\n/salir\n");
     CHECK(r.codigo == 0, "orion termina con /salir (código 0)");
     CHECK(contiene(r.salida, "Hola, soy Orion (simulado).") && contiene(r.salida, "Conversación:"), "orion: chat y comandos por la terminal");
     CHECK(fs::exists(d.p / "conversacion.jsonl") && fs::exists(d.p / "config.json"), "orion guarda en datos/");
-    auto sin = ejecutar_proceso({ORION_EXE, "--datos", d.p.string(), "--ollama", "http://127.0.0.1:1", "--sin-autonomia"}, {}, 60, "hola\n/estado\n");
+    auto sin = ejecutar_proceso({ORION_EXE, "--datos", d.p.string(), "--ollama", "http://127.0.0.1:1", "--sin-autonomia", "--web-puerto", "0"}, {}, 60, "hola\n/estado\n");
     CHECK(sin.codigo == 0 && contiene(sin.salida, "No encuentro Ollama") && contiene(sin.salida, "Ahora:"), "sin Ollama: avisa y los comandos siguen");
-    auto rein = ejecutar_proceso({GUARDIAN_EXE, "--orion", ORION_EXE, "--datos", d.p.string(), "--ollama", sim.url(), "--sin-autonomia"}, {}, 60,
+    auto rein = ejecutar_proceso({GUARDIAN_EXE, "--orion", ORION_EXE, "--datos", d.p.string(), "--ollama", sim.url(), "--sin-autonomia", "--web-puerto", "0"}, {}, 60,
                                  "/reinicia\n");
     CHECK(rein.codigo == 0 && contiene(rein.salida, "Reiniciando"), "guardián: /reinicia la vuelve a arrancar");
     auto caida = ejecutar_proceso({GUARDIAN_EXE, "--orion", ORION_EXE, "--datos", d.p.string(), "--opcion-que-no-existe"}, {}, 60);
@@ -364,7 +412,7 @@ static void t_herramientas() {
     c.aviso = [&](const std::string& t) { avisos.push_back(t); };
     c.reinicio_pedido = &reinicio;
     Herramientas h(c);
-    CHECK(h.definiciones().size() == 11, "acceso total: 11 herramientas");
+    CHECK(h.definiciones().size() == 13, "acceso total: 13 herramientas");
     CHECK(contiene(h.usar("ejecutar_comando", {{"comando", "echo hola-orion"}}), "hola-orion"), "ejecutar_comando");
     CHECK(contiene(h.usar("ejecutar_comando", {{"comando", "exit 3"}}), "código de salida: 3"), "código de salida");
     fs::path f = d.p / "sub" / "nota.txt";
@@ -381,7 +429,10 @@ static void t_herramientas() {
     c.permisos = "lectura";
     Herramientas lect(c);
     CHECK(lect.definiciones().size() == 7 && contiene(lect.usar("ejecutar_comando", {{"comando", "echo x"}}), "No tengo permiso"), "permisos de lectura");
-    CHECK(Herramientas(ContextoHerramientas{d.p, {}, &mem, "ninguno"}).definiciones().size() == 3, "permisos: ninguno");
+    ContextoHerramientas cn;
+    cn.datos = d.p;
+    cn.permisos = "ninguno";
+    CHECK(Herramientas(cn).definiciones().size() == 3, "permisos: ninguno");
     // web (sin red: solo el tratamiento del HTML)
     CHECK(Herramientas::html_a_texto("<html><head><title>x</title><script>malo()</script></head><body><p>Hola &amp; adiós</p><p>Dos</p></body></html>") ==
               "Hola & adiós\nDos",
@@ -403,6 +454,7 @@ static void t_agente() {
     DirTemporal d;
     Config cfg;
     cfg.ollama = sim.url();
+    cfg.web_puerto = 0;
     OpcionesNucleo op;
     op.datos = d.p;
     op.color = false;
@@ -445,6 +497,7 @@ static void t_metas() {
     DirTemporal d;
     Config cfg;
     cfg.ollama = sim.url();
+    cfg.web_puerto = 0;
     OpcionesNucleo op;
     op.datos = d.p;
     op.color = false;
@@ -456,7 +509,9 @@ static void t_metas() {
     CHECK(contiene(n.comando("/aprende gravedad cuántica de bucles"), "Meta m1 creada"), "/aprende");
     CHECK(esperar([&] { return contiene(cap.ver(), "He terminado de aprender"); }, 15), "trabaja a solas en la meta y avisa");
     auto ms = n.memoria().metas();
-    CHECK(ms.size() == 1 && ms[0].estado == "hecha" && contiene(ms[0].resultado, "Resumen"), "la meta queda hecha con su resumen");
+    CHECK(ms.size() == 1 && ms[0].estado == "hecha" && contiene(ms[0].resultado, "Resumen final"), "la meta queda hecha con su resumen");
+    CHECK(ms[0].plan.size() == 2 && ms[0].notas.size() == 2 && ms[0].paso == 2, "la meta se hizo por pasos, según su plan");
+    CHECK(contiene(cap.ver(), "he planeado 2 pasos") && contiene(cap.ver(), "paso 1/2 hecho"), "avisa del avance paso a paso");
     CHECK(contiene(cap.ver(), "⚙ buscar_en_memoria"), "usa herramientas a solas");
     CHECK(contiene(n.comando("/metas"), "hecha"), "/metas");
     auto recs = n.memoria().recuerdos();
@@ -475,27 +530,322 @@ static void t_guardian_actualizacion() {
     fs::create_directories(datos / "actualizacion");
     // 1) versión nueva buena: se aplica
     fs::copy_file(ORION_EXE, datos / "actualizacion" / orion.filename());
-    auto r = ejecutar_proceso({GUARDIAN_EXE, "--orion", orion.string(), "--datos", datos.string(), "--ollama", sim.url(), "--sin-autonomia"}, {}, 60, "/salir\n");
+    auto r = ejecutar_proceso({GUARDIAN_EXE, "--orion", orion.string(), "--datos", datos.string(), "--ollama", sim.url(), "--sin-autonomia", "--web-puerto", "0"}, {}, 60, "/salir\n");
     fs::path anterior = bin / (orion.stem().string() + ".anterior" + orion.extension().string());
     CHECK(r.codigo == 0 && contiene(r.salida, "Aplicando la versión nueva") && fs::exists(anterior) && !fs::exists(datos / "actualizacion" / orion.filename()),
           "guardián: aplica la versión nueva que Orion compiló");
     // 2) versión nueva rota: vuelve a la anterior
     escribir_atomico(datos / "actualizacion" / orion.filename(), "esto no es un ejecutable");
-    r = ejecutar_proceso({GUARDIAN_EXE, "--orion", orion.string(), "--datos", datos.string(), "--ollama", sim.url(), "--sin-autonomia"}, {}, 60, "/salir\n");
+    r = ejecutar_proceso({GUARDIAN_EXE, "--orion", orion.string(), "--datos", datos.string(), "--ollama", sim.url(), "--sin-autonomia", "--web-puerto", "0"}, {}, 60, "/salir\n");
     CHECK(contiene(r.salida, "vuelvo a la anterior"), "guardián: si la versión nueva no arranca, vuelve a la anterior");
     auto v = ejecutar_proceso({orion.string(), "--version"}, {}, 20);
     CHECK(contiene(v.salida, "orion"), "tras volver atrás, Orion funciona");
     CHECK(contiene(r.salida, "falló al arrancar") || fs::exists(datos / "actualizacion_fallida.txt") || contiene(leer_archivo(datos / "guardian.log"), "vuelvo a la anterior"),
           "queda constancia del fallo");
-    auto reinicio = ejecutar_proceso({ORION_EXE, "--datos", (d.p / "datos2").string(), "--ollama", sim.url(), "--sin-autonomia"}, {}, 60, "reiníciate\n");
+    auto reinicio = ejecutar_proceso({ORION_EXE, "--datos", (d.p / "datos2").string(), "--ollama", sim.url(), "--sin-autonomia", "--web-puerto", "0"}, {}, 60, "reiníciate\n");
     CHECK(reinicio.codigo == CODIGO_REINICIO, "orion sale con 75 cuando pide reiniciarse (el guardián la vuelve a arrancar)");
+}
+
+static void t_significado() {
+    OllamaSimulado sim;
+    DirTemporal d;
+    Config cfg;
+    cfg.ollama = sim.url();
+    cfg.web_puerto = 0;
+    OpcionesNucleo op;
+    op.datos = d.p;
+    op.color = false;
+    op.autonomo = false;
+    Capturador cap;
+    {
+        Nucleo n(cfg, op, cap.salida());
+        n.arrancar();
+        auto& m = n.memoria();
+        m.recordar("usuario", "A Ana le apasiona la física teórica.", "manual");
+        m.recordar("proyecto", "Orion está escrito en C++ y usa Ollama.", "manual");
+        m.recordar("mundo", "El cosmos tiene unos 13800 millones de años.", "manual");
+        CHECK(n.mente().hay_que_indexar(), "hay recuerdos sin indexar");
+        std::atomic<bool> no{false};
+        CHECK(n.mente().indexar(&no) == "3 recuerdos indexados por significado" && m.num_vectores("qwen2.5:3b") == 3, "indexa por significado");
+        CHECK(!n.mente().hay_que_indexar(), "ya no queda nada por indexar");
+        CHECK(m.buscar("¿qué ciencia le gusta?", 3).empty(), "por palabras no lo encuentra (no hay palabras en común)");
+        auto vq = n.mente().vectorizar("¿qué ciencia le gusta?");
+        auto r = m.buscar("¿qué ciencia le gusta?", 3, false, &vq, "qwen2.5:3b");
+        CHECK(!r.empty() && contiene(r[0].texto, "física"), "por significado sí lo encuentra");
+        auto vu = n.mente().vectorizar("edad del universo");
+        auto r2 = m.buscar("edad del universo", 3, false, &vu, "qwen2.5:3b");
+        CHECK(!r2.empty() && contiene(r2[0].texto, "cosmos"), "sinónimos: universo → cosmos");
+        CHECK(m.recuerdos_sin_vector("otro-modelo", 10).size() == 3, "si cambia el modelo, hay que volver a indexar");
+        n.entrada("¿Qué ciencia me gusta?");
+        n.esperar_inactividad(10);
+        CHECK(contiene(sim.ultima()["messages"][0]["content"].get<std::string>(), "física teórica"), "el chat recibe recuerdos por significado");
+        CHECK(contiene(n.comando("/buscar ciencia"), "física"), "/buscar por significado");
+        CHECK(contiene(n.comando("/memoria"), "Indexados por significado: 3 de 3"), "/memoria muestra el índice");
+        // resúmenes de conversaciones antiguas
+        for (int i = 0; i < 40; ++i) m.anadir_turno(i % 2 ? "orion" : "usuario", "mensaje número " + std::to_string(i));
+        CHECK(n.mente().hay_que_resumir(), "hay conversación antigua que resumir");
+        CHECK(contiene(n.mente().resumir_conversacion(&no), "resumida"), "resume un bloque antiguo");
+        auto recs = m.recuerdos();
+        CHECK(recs.back().tipo == "resumen" && contiene(recs.back().texto, "Conversación del") && contiene(recs.back().texto, "turnos 1-20"), "el resumen queda como recuerdo");
+        CHECK(m.olvidar(recs.front().id) && m.num_vectores("qwen2.5:3b") == 2, "olvidar borra también su vector");
+        n.parar();
+    }
+    Memoria m2(d.p);
+    m2.cargar();
+    CHECK(m2.num_vectores("qwen2.5:3b") == 2, "los vectores persisten tras reiniciar");
+    // un modelo sin embeddings: se sigue buscando por palabras, sin errores
+    sim.sin_embeddings = true;
+    Capturador cap2;
+    DirTemporal d2;
+    op.datos = d2.p;
+    Nucleo n2(cfg, op, cap2.salida());
+    n2.arrancar();
+    n2.memoria().recordar("usuario", "Le gusta el café.", "manual");
+    std::atomic<bool> no{false};
+    CHECK(contiene(n2.mente().indexar(&no), "no da vectores") && !n2.mente().hay_que_indexar(), "sin embeddings: lo dice y no insiste");
+    CHECK(contiene(n2.comando("/buscar café"), "café"), "sin embeddings: busca por palabras");
+    n2.parar();
+}
+
+static void t_aprender() {
+    DirTemporal d;
+    Habilidades hs(d.p / "habilidades");
+    Habilidad h;
+    h.nombre = "saludar a alguien";
+    h.descripcion = "Saluda a una persona por su nombre. Argumento: el nombre.";
+#ifdef _WIN32
+    h.lenguaje = "cmd";
+    h.codigo = "@echo off\r\necho Hola, %1";
+#else
+    h.lenguaje = "sh";
+    h.codigo = "echo \"Hola, $1\"";
+#endif
+    h.prueba = "Ana";
+    CHECK(contiene(hs.guardar(h), "guardada") && contiene(hs.guardar(h), "Hola, Ana"), "guardar habilidad tras probarla");
+    Habilidad mala = h;
+    mala.nombre = "rota";
+    mala.codigo = "exit 4";
+    CHECK(contiene(hs.guardar(mala), "No la guardo") && hs.todas().size() == 1, "una habilidad que falla no se guarda");
+    CHECK(contiene(hs.usar("saludar_a_alguien", "Luis"), "Hola, Luis"), "usar habilidad (el nombre se normaliza)");
+    Habilidad g;
+    CHECK(hs.obtener("saludar_a_alguien", g) && g.usos == 1 && g.exitos == 1, "cuenta usos y éxitos");
+    CHECK(!hs.relevantes("quiero saludar a mi amigo", 3).empty() && hs.relevantes("calcular impuestos", 3).empty(), "habilidades relevantes");
+    CHECK(Habilidades::nombre_valido("contar_lineas") && !Habilidades::nombre_valido("../malo"), "nombres válidos");
+    // práctica con juez real y metas, a través del núcleo
+    OllamaSimulado sim;
+    Config cfg;
+    cfg.ollama = sim.url();
+    cfg.web_puerto = 0;
+    OpcionesNucleo op;
+    op.datos = d.p;
+    op.color = false;
+    op.autonomo = false;
+    Capturador cap;
+    Nucleo n(cfg, op, cap.salida());
+    n.arrancar();
+    CHECK(contiene(n.comando("/habilidades"), "saludar_a_alguien"), "/habilidades");
+    n.entrada("hola, ¿puedes saludar a alguien?");
+    n.esperar_inactividad(10);
+    CHECK(contiene(sim.ultima()["messages"][0]["content"].get<std::string>(), "## Mis habilidades") &&
+              contiene(sim.ultima()["messages"][0]["content"].get<std::string>(), "saludar_a_alguien"),
+          "sus habilidades relevantes van al contexto");
+    std::atomic<bool> no{false};
+#ifdef _WIN32
+    sim.practica_script = "@echo off\r\nset /a x=2+3\r\necho %x%";
+#endif
+    std::string r = n.mente().practicar(&no, d.p / "practica");
+    CHECK(contiene(r, "acerté") && contiene(r, "nivel 1"), "práctica: predice, ejecuta y acierta");
+    sim.practica_prediccion = "6";
+    r = n.mente().practicar(&no, d.p / "practica");
+    CHECK(contiene(r, "fallé"), "práctica: si la predicción no coincide con la ejecución, es un fallo");
+    auto recs = n.memoria().recuerdos();
+    CHECK(!recs.empty() && recs.back().tipo == "leccion", "de un fallo saca una lección");
+    CHECK(split_lines(leer_archivo(d.p / "practica.jsonl")).size() == 2, "los ejemplos verificados se guardan (datos para la fase 5)");
+    sim.practica_prediccion = "5";
+    for (int i = 0; i < 4; ++i) n.mente().practicar(&no, d.p / "practica");
+    CHECK(n.memoria().estadisticas().value("practica_nivel", 0.0) == 2.0, "si acierta casi siempre, sube la dificultad");
+    sim.practica_script = "exit 3";
+    CHECK(contiene(n.mente().practicar(&no, d.p / "practica"), "no funciona"), "un ejercicio que no funciona se descarta");
+    CHECK(contiene(n.comando("/practica"), "Nivel actual: 2/5"), "/practica");
+    n.parar();
+}
+
+static void t_evaluacion() {
+    DirTemporal d;
+    TareaEvaluacion t;
+    t.comprobar = {{"tipo", "numero"}, {"valor", 391}};
+    CHECK(comprobar_tarea(t, "El resultado es 391.", d.p) && !comprobar_tarea(t, "Es 390", d.p), "comprobación numérica");
+    t.comprobar = {{"tipo", "alguno"}, {"valor", {"no lo se", "desconozco"}}};
+    CHECK(comprobar_tarea(t, "No lo sé, la verdad.", d.p) && !comprobar_tarea(t, "Es el 600 123 456", d.p), "comprobación 'alguno' (sin tildes)");
+    t.comprobar = {{"tipo", "todas"}, {"comprobaciones", {{{"tipo", "contiene"}, {"valor", {"jueves"}}}, {{"tipo", "no_contiene"}, {"valor", {"viernes"}}}}}};
+    CHECK(comprobar_tarea(t, "Jueves", d.p) && !comprobar_tarea(t, "jueves o viernes", d.p), "comprobación compuesta");
+    escribir_atomico(d.p / "r.txt", "hola ORION");
+    t.comprobar = {{"tipo", "archivo"}, {"ruta", "r.txt"}, {"contiene", "orion"}};
+    CHECK(comprobar_tarea(t, "", d.p), "comprobación de archivo");
+    t.comprobar = {{"tipo", "json"}, {"clave", "listo"}, {"valor", true}};
+    CHECK(comprobar_tarea(t, "Aquí está: {\"listo\": true}", d.p) && !comprobar_tarea(t, "{\"listo\": false}", d.p), "comprobación JSON");
+    std::string err;
+    CHECK(cargar_tareas(fs::path(ORION_REPO) / "evaluacion" / "banco.json", &err).size() == 6 &&
+              cargar_tareas(fs::path(ORION_REPO) / "evaluacion" / "examen_referencia.json", &err).size() == 6,
+          "el banco y el examen del repositorio son válidos");
+}
+
+static void t_automejora() {
+    OllamaSimulado sim;
+    DirTemporal d;
+    fs::path repo = d.p / "repo";
+    escribir_atomico(repo / "CMakeLists.txt", "# repositorio de prueba\n");
+    escribir_atomico(repo / "prompts" / "sistema.md", Mente::reglas_por_defecto() + "\n");
+    escribir_atomico(repo / "evaluacion" / "banco.json", R"({"tareas": [
+        {"id": "b1", "pregunta": "¿Cuánto es 17 multiplicado por 23?", "comprobar": {"tipo": "numero", "valor": 391}},
+        {"id": "b2", "pregunta": "¿Cuánto es 2 + 2?", "comprobar": {"tipo": "numero", "valor": 4}}]})");
+    escribir_atomico(repo / "evaluacion" / "examen_referencia.json", R"({"tareas": [
+        {"id": "e1", "pregunta": "Saluda.", "comprobar": {"tipo": "contiene", "valor": ["hola"]}}]})");
+    bool hay_git = ejecutar_proceso({"git", "--version"}, {}, 10).codigo == 0;
+    if (hay_git) {
+        ejecutar_proceso({"git", "init", "-q", repo.string()}, {}, 20);
+        ejecutar_proceso({"git", "-C", repo.string(), "add", "-A"}, {}, 20);
+        ejecutar_proceso({"git", "-C", repo.string(), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "inicio"}, {}, 20);
+    }
+    Config cfg;
+    cfg.ollama = sim.url();
+    cfg.web_puerto = 0;
+    OpcionesNucleo op;
+    op.datos = d.p / "datos";
+    op.repo = repo;
+    op.prompts = repo / "prompts";
+    op.ejecutable = ORION_EXE;
+    op.color = false;
+    op.autonomo = false;
+    Capturador cap;
+    Nucleo n(cfg, op, cap.salida());
+    n.arrancar();
+    CHECK(contiene(n.comando("/mejorate"), "De acuerdo"), "/mejorate");
+    CHECK(esperar([&] { return contiene(cap.ver(), "Automejora:"); }, 60), "termina un ciclo de automejora");
+    CHECK(contiene(cap.ver(), "mejora aceptada") && contiene(cap.ver(), "banco 0/2 → 1/2") && contiene(cap.ver(), "examen 1/1 → 1/1"),
+          "mide antes y después, y acepta porque mejora sin empeorar el examen");
+    CHECK(contiene(leer_archivo(repo / "prompts" / "sistema.md"), "RESPONDE CON NÚMEROS"), "aplica el cambio a sus instrucciones");
+    CHECK(contiene(n.comando("/config"), "0.5"), "aplica los parámetros nuevos (temperatura)");
+    if (hay_git) CHECK(contiene(ejecutar_proceso({"git", "-C", repo.string(), "log", "--oneline", "-1"}, {}, 10).salida, "mejora automática"), "lo registra en git");
+    // segundo ciclo: mejora el banco pero empeora el examen → se rechaza
+    size_t antes = cap.ver().size();
+    n.comando("/mejorate");
+    CHECK(esperar([&] { return contiene(cap.ver().substr(antes), "Automejora:"); }, 60), "segundo ciclo");
+    CHECK(contiene(cap.ver().substr(antes), "rechazada") && contiene(cap.ver().substr(antes), "empeora el examen"), "rechaza lo que empeora el examen de referencia");
+    CHECK(!contiene(leer_archivo(repo / "prompts" / "sistema.md"), "SOLO NÚMEROS"), "lo rechazado no se aplica");
+    std::string m = n.comando("/mejoras");
+    CHECK(contiene(m, "#1") && contiene(m, "ACEPTADA") && contiene(m, "#2") && contiene(m, "rechazada"), "/mejoras");
+    CHECK(contiene(n.comando("/volver 1"), "He vuelto") && !contiene(leer_archivo(repo / "prompts" / "sistema.md"), "RESPONDE CON NÚMEROS"), "/volver deshace la mejora");
+    escribir_atomico(repo / "evaluacion" / "examen_referencia.json", R"({"tareas": []})");
+    CHECK(contiene(n.comando("/mejoras"), "examen de referencia ha cambiado"), "avisa si alguien cambia el examen de referencia");
+    n.parar();
+}
+
+static void t_web() {
+    OllamaSimulado sim;
+    DirTemporal d;
+    int puerto;
+    {
+        ServidorHttp libre([](const PeticionHttp&) { return RespuestaServidor{}; });
+        puerto = libre.iniciar(0);
+        libre.parar();
+    }
+    Config cfg;
+    cfg.ollama = sim.url();
+    cfg.web_puerto = puerto;
+    OpcionesNucleo op;
+    op.datos = d.p;
+    op.repo = ORION_REPO;
+    op.color = false;
+    op.autonomo = false;
+    Capturador cap;
+    Nucleo n(cfg, op, cap.salida());
+    n.arrancar();
+    std::string url = n.url_web();
+    CHECK(contiene(cap.ver(), "Interfaz web: http://127.0.0.1:" + std::to_string(puerto) + "/?t=") && !url.empty(), "anuncia la interfaz web con su token");
+    std::string token = url.substr(url.find("?t=") + 3);
+    ClienteHttp sin("http://127.0.0.1:" + std::to_string(puerto));
+    auto pagina = sin.get("/");
+    CHECK(pagina.estado == 200 && contiene(pagina.cuerpo, "<title>Orion</title>") && contiene(pagina.cuerpo, "/api/eventos"), "sirve su interfaz (interfaz/index.html)");
+    CHECK(sin.get("/api/estado").estado == 403, "la API sin token se rechaza");
+    ClienteHttp con = sin;
+    con.cabecera("X-Orion-Token", token);
+    auto est = con.get("/api/estado");
+    CHECK(est.estado == 200 && json::parse(est.cuerpo).value("modelo", std::string()) == "qwen2.5:3b", "/api/estado con token");
+    ClienteHttp ajeno = con;
+    ajeno.cabecera("Host", "atacante.example");
+    CHECK(ajeno.get("/api/estado").estado == 403, "rechaza otro Host (protección contra DNS rebinding)");
+    con.post("/api/mensaje", R"({"texto": "hola desde la web"})");
+    n.esperar_inactividad(10);
+    auto ev = json::parse(con.get("/api/eventos?desde=0").cuerpo);
+    std::string t = ev.value("texto", std::string());
+    CHECK(contiene(t, "Tú (web)> hola desde la web") && contiene(t, "Orion> Hola, soy Orion"), "chat desde la web: el mensaje y la respuesta llegan a la página");
+    long long sig = ev.value("siguiente", 0LL);
+    CHECK(json::parse(con.get("/api/eventos?desde=" + std::to_string(sig)).cuerpo).value("texto", std::string("x")).empty(), "eventos incrementales");
+    auto cmd = json::parse(con.post("/api/mensaje", R"({"texto": "/memoria"})").cuerpo);
+    CHECK(contiene(cmd.value("respuesta", std::string()), "Conversación: 2 turnos"), "comandos desde la web");
+    auto sal = json::parse(con.post("/api/mensaje", R"({"texto": "/salir"})").cuerpo);
+    CHECK(contiene(sal.value("respuesta", std::string()), "Desde la web no"), "desde la web no se apaga");
+    n.memoria().crear_meta("algo", "prueba");
+    CHECK(json::parse(con.get("/api/metas").cuerpo).size() == 1 && json::parse(con.get("/api/recuerdos").cuerpo).is_array() &&
+              json::parse(con.get("/api/mejoras").cuerpo).is_array() && json::parse(con.get("/api/acciones").cuerpo).is_array(),
+          "paneles: metas, recuerdos, mejoras, acciones");
+    for (int i = 0; i < 60; ++i) con.get("/api/estado");   // sondeo continuo: no debe acumular hilos ni fallar
+    CHECK(con.get("/api/estado").estado == 200, "aguanta el sondeo continuo");
+    CHECK(contiene(n.comando("/web"), url), "/web");
+    n.parar();
+}
+
+static void t_dispositivos() {
+    OllamaSimulado local, pc;
+    pc.duracion_ns = 50000000;   // 10 veces más rápido
+    DirTemporal d;
+    Config cfg;
+    cfg.ollama = local.url();
+    cfg.web_puerto = 0;
+    OpcionesNucleo op;
+    op.datos = d.p;
+    op.color = false;
+    op.autonomo = false;
+    Capturador cap;
+    Nucleo n(cfg, op, cap.salida());
+    n.arrancar();
+    n.entrada("hola");   // mide la velocidad local
+    n.esperar_inactividad(10);
+    CHECK(contiene(n.comando("/dispositivo añadir pc " + pc.url() + " qwen2.5:7b"), "Responde"), "registrar un dispositivo que responde");
+    CHECK(contiene(n.comando("/dispositivos"), "pc: " + pc.url()) && contiene(n.comando("/dispositivos"), "▶ local"), "/dispositivos");
+    std::string r = n.revisar_dispositivos();
+    CHECK(contiene(r, "Me paso a pensar en «pc»"), "se pasa sola al dispositivo más rápido");
+    n.entrada("hola otra vez");
+    n.esperar_inactividad(10);
+    CHECK(pc.num_peticiones() >= 2 && pc.ultima().value("model", std::string()) == "qwen2.5:7b", "ahora piensa en el otro ordenador, con su modelo");
+    CHECK(contiene(leer_archivo(d.p / "config.json"), "\"dispositivo\": \"pc\"") && contiene(leer_archivo(d.p / "config.json"), "\"modelo\": \"qwen2.5:3b\""),
+          "recuerda el dispositivo y conserva su modelo base");
+    pc.parar();
+    r = n.revisar_dispositivos();
+    CHECK(contiene(r, "no responde: vuelvo"), "si el dispositivo cae, vuelve al local");
+    size_t antes = local.num_peticiones();
+    n.entrada("¿sigues ahí?");
+    n.esperar_inactividad(10);
+    CHECK(local.num_peticiones() > antes && local.ultima().value("model", std::string()) == "qwen2.5:3b", "vuelve a pensar en local con su modelo");
+    CHECK(contiene(n.comando("/dispositivo quitar pc"), "Quitado"), "/dispositivo quitar");
+    // límites de hardware
+    n.memoria().fijar("tokens_por_segundo", 1.5);
+    std::string l = n.evaluar_limites(true);
+    CHECK(contiene(l, "limitada por el hardware") && contiene(l, "pienso despacio") && contiene(l, "/dispositivo añadir"), "detecta que el hardware la limita y propone escalar");
+    CHECK(n.evaluar_limites().empty(), "no repite el aviso más de una vez al día");
+    CHECK(!n.memoria().recuerdos().empty() && n.memoria().recuerdos().back().tipo == "yo", "lo anota en su memoria sobre sí misma");
+    n.parar();
 }
 
 int main() {
     struct { const char* n; void (*f)(); } pruebas[] = {{"util", t_util}, {"decodificador", t_decodificador}, {"http", t_http}, {"ollama", t_ollama},
                                                        {"memoria", t_memoria}, {"nucleo", t_nucleo}, {"interrupcion", t_interrupcion},
                                                        {"ejecutables", t_ejecutables}, {"herramientas", t_herramientas}, {"agente", t_agente},
-                                                       {"metas", t_metas}, {"guardian_actualizacion", t_guardian_actualizacion}};
+                                                       {"metas", t_metas}, {"guardian_actualizacion", t_guardian_actualizacion},
+                                                       {"significado", t_significado}, {"aprender", t_aprender},
+                                                       {"evaluacion", t_evaluacion}, {"automejora", t_automejora},
+                                                       {"web", t_web}, {"dispositivos", t_dispositivos}};
     for (auto& p : pruebas) {
         int antes = fallos;
         p.f();

@@ -10,6 +10,7 @@ El modelo decide cuándo usarlas (llamadas a herramientas nativas de Ollama; `qw
 |---|---|---|
 | `ejecutar_comando` | cualquier orden en `cmd.exe` (y PowerShell con `powershell -Command`), con tiempo máximo | total |
 | `escribir_archivo` | escribir o añadir a cualquier archivo | total |
+| `guardar_habilidad` · `usar_habilidad` | guardar un script que funciona (se prueba antes) y volver a usarlo | total |
 | `compilar_nueva_version` | compilar su código fuente en `build-auto\` y dejar la versión lista | total |
 | `reiniciarme` | reiniciarse (el guardián aplica la versión nueva si la hay) | total |
 | `leer_archivo`, `listar_directorio` | leer cualquier archivo o carpeta | lectura |
@@ -23,6 +24,16 @@ Además "conoce su cuerpo": en cada conversación recibe una sección **Mi cuerp
 - dónde está su **memoria** y qué archivos la forman;
 - dónde están sus **pesos**: el archivo GGUF que usa Ollama, con su tamaño, número de parámetros y cuantización;
 - su **hardware** y sus **permisos**.
+
+## Qué hace a solas, sin que se lo pidas
+
+Cuando no le hablas, y con permisos `total`:
+- **Metas**: usa sus herramientas (internet, comandos, archivos) para aprender lo que se propuso.
+- **Práctica**: inventa scripts cortos y los **ejecuta** en `datos/practica/`, para comprobar si predice bien lo que hacen.
+- **Automejora medida**: ejecuta `orion --evaluar` (que a su vez usa herramientas en carpetas temporales de `datos/automejora/`), y si acepta un cambio **reescribe `prompts/sistema.md` y hace commit en git** en tu repositorio.
+- **Dispositivos**: mide y usa los ordenadores que hayas registrado.
+
+Con `lectura` no practica ni se automejora. Con `ninguno` tampoco trabaja en metas. Todo aparece en la terminal y en la web, y queda en `acciones.jsonl` y `mejoras.jsonl`.
 
 ## Sus pesos, siendo honestos
 
@@ -47,6 +58,7 @@ Puede **leer, copiar y medir** el archivo de sus pesos, y crear variantes del mo
 
 - **Carpeta propia**: deja que viva en `C:\Orion`. Con acceso total, un error del modelo (es pequeño y se equivoca) podría borrar o sobrescribir algo. Mejor que no sean tus documentos.
 - **Copias de `datos\`**: es su memoria. Cópiala de vez en cuando, o pídele que la versione con git.
-- **Ollama solo en local**: no expongas el puerto 11434 a internet.
+- **Ollama solo en local**: no expongas el puerto 11434 a internet (en la red de casa sí, si usas otro dispositivo: ver [ESCALAR.md](ESCALAR.md)).
+- **Interfaz web**: solo es accesible desde tu ordenador y exige un token (`datos/web_token.txt`); no lo compartas.
 - **Una cuenta de Windows sin administrador** limita lo que un comando equivocado puede romper. Si en algún momento quieres un aislamiento total, una máquina virtual (Hyper-V o VirtualBox) es lo más seguro.
 - **Antes de lo irreversible**: se le indica que diga qué va a hacer antes de borrar, sobrescribir o instalar. Es una instrucción, no un bloqueo: un modelo de 3B puede no seguirla siempre.

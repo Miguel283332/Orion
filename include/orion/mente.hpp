@@ -19,6 +19,13 @@ struct Config {
     std::string permisos = "total";     // total | lectura | ninguno (qué herramientas puede usar)
     int max_pasos = 10;                 // herramientas por turno como máximo
     std::string cmake = "cmake";        // ruta a cmake (para compilarse a sí misma)
+    int practica_cada_min = 60;         // práctica con juez real a solas (0 = nunca)
+    double automejora_cada_h = 12;      // ciclo de automejora medida a solas (0 = nunca)
+    int web_puerto = 7860;              // interfaz web local (0 = desactivada)
+    json dispositivos = json::array();  // otros ordenadores TUYOS con Ollama: [{"nombre","ollama","modelo"}]
+    std::string dispositivo = "local";  // en cuál piensa ahora
+    bool dispositivo_auto = true;       // pasarse sola al más rápido disponible (y volver si cae)
+    int semilla = -1;                   // -1: aleatoria (en las evaluaciones se fija para poder comparar)
     int num_predict = 512;
     double temperatura = 0.7;
     static Config cargar(const fs::path& archivo);   // crea el archivo con valores por defecto si no existe
@@ -38,21 +45,43 @@ public:
 
     // Responde usando herramientas si hace falta (h puede ser nullptr: sin herramientas).
     ResultadoGeneracion responder(const std::string& mensaje, const Trozo& por_trozo, const std::atomic<bool>* cancelar, Herramientas* h = nullptr);
-    // Trabaja a solas en una meta de aprendizaje con sus herramientas. Devuelve el resumen de lo aprendido ("" si se canceló).
-    std::string trabajar_en_meta(const Meta& meta, Herramientas* h, const std::atomic<bool>* cancelar);
+    // Trabaja a solas en una meta de aprendizaje, un paso cada vez (primero la planifica). Se puede interrumpir y retomar.
+    struct AvanceMeta {
+        bool terminada = false;
+        bool cancelada = false;
+        std::string texto;   // resumen final si terminó; si no, qué ha hecho en esta sesión
+    };
+    AvanceMeta trabajar_en_meta(const Meta& meta, Herramientas* h, const std::atomic<bool>* cancelar);
+    // Práctica con juez real: inventa un script, predice lo que imprime y lo ejecuta para comprobarlo.
+    // Ajusta la dificultad para acertar ~la mitad. Devuelve un texto corto ("" si se canceló).
+    std::string practicar(const std::atomic<bool>* cancelar, const fs::path& dir_practica);
+    bool hay_que_practicar(double cada_s) const;
+    void fijar_habilidades(Habilidades* h) { habilidades_ = h; }
+    void fijar_dir_prompts(const fs::path& d) { dir_prompts_ = d; }
+    const fs::path& dir_prompts() const { return dir_prompts_; }
+    std::string reglas() const;                     // prompts/sistema.md, o las de por defecto
+    static std::string reglas_por_defecto();
     void fijar_cuerpo(const std::string& s) { cuerpo_ = s; }
-    void modelo_cambiado() { sin_herramientas_ = false; }   // descripción de su código, memoria, pesos y hardware
+    void modelo_cambiado() { sin_herramientas_ = false; embed_ok_ = true; embed_reintento_ = 0; }   // descripción de su código, memoria, pesos y hardware
     // Tareas a solas. Devuelven un texto corto para mostrar ("2 recuerdos nuevos"), o "" si no había nada que hacer.
     // Lanzan std::runtime_error si el modelo falla; si se cancelan devuelven "" sin cambiar nada.
     std::string reflexionar(const std::atomic<bool>* cancelar);
     std::string escribir_diario(const std::atomic<bool>* cancelar);
     std::string actualizar_yo(const std::atomic<bool>* cancelar, const std::string& hechos_medidos);
 
+    // Memoria por significado (fase 2)
+    std::vector<float> vectorizar(const std::string& texto);       // vacío si el modelo no da embeddings
+    std::string indexar(const std::atomic<bool>* cancelar);         // vectores de los recuerdos que no lo tienen
+    std::string resumir_conversacion(const std::atomic<bool>* cancelar);   // resume bloques antiguos de la conversación
+    bool hay_que_indexar() const;
+    bool hay_que_resumir() const;
+    bool embeddings_disponibles() const { return embed_ok_; }
+
     bool hay_que_reflexionar(double segundos_sin_hablar) const;
     bool hay_que_escribir_diario() const;
     bool hay_que_actualizar_yo() const;
 
-    std::string contexto_sistema(const std::string& consulta, const std::string& estado_actual) const;
+    std::string contexto_sistema(const std::string& consulta, const std::string& estado_actual, const std::vector<float>* vq = nullptr) const;
     void fijar_estado_actual(const std::string& s) { estado_actual_ = s; }
     Medida medida() const;
 
@@ -67,6 +96,10 @@ private:
     std::string estado_actual_;
     std::string cuerpo_;
     bool sin_herramientas_ = false;   // el modelo no admite herramientas
+    std::atomic<bool> embed_ok_{true};
+    Habilidades* habilidades_ = nullptr;
+    fs::path dir_prompts_;
+    double embed_reintento_ = 0;
 };
 
 std::string extraer_json_objeto(const std::string& texto);   // primer objeto {...} equilibrado

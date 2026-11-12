@@ -6,6 +6,7 @@
 //   estadisticas.json   contadores acumulados (llamadas, tokens, tiempo encendida...)
 // La búsqueda es por palabras (BM25). En la fase 2 se añade búsqueda por significado con el mismo modelo.
 #pragma once
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -35,7 +36,10 @@ struct Meta {
     std::string tema, motivo;
     std::string estado = "pendiente";   // pendiente | hecha | fallida
     std::string resultado;
-    int intentos = 0;
+    int intentos = 0;                 // fallos seguidos (se reinicia al avanzar)
+    std::vector<std::string> plan;    // pasos
+    size_t paso = 0;                  // siguiente paso por hacer
+    std::vector<std::string> notas;   // lo conseguido en cada paso
 };
 
 struct Encontrado {
@@ -61,7 +65,15 @@ public:
     std::string recordar(const std::string& tipo, const std::string& texto, const std::string& origen);   // "" si ya lo sabía
     bool olvidar(const std::string& id);
     std::vector<Recuerdo> recuerdos() const;
-    std::vector<Encontrado> buscar(const std::string& consulta, size_t k, bool incluir_conversacion = false) const;
+    // Búsqueda híbrida: palabras (BM25) y, si se da el vector de la consulta, significado (coseno con los vectores
+    // guardados del mismo modelo).
+    std::vector<Encontrado> buscar(const std::string& consulta, size_t k, bool incluir_conversacion = false,
+                                   const std::vector<float>* vector_consulta = nullptr, const std::string& modelo = "") const;
+
+    // vectores de significado (embeddings) de los recuerdos, en datos/vectores.bin
+    void guardar_vector(const std::string& id, const std::string& modelo, const std::vector<float>& v);
+    std::vector<Recuerdo> recuerdos_sin_vector(const std::string& modelo, size_t max) const;
+    size_t num_vectores(const std::string& modelo) const;
 
     // diario
     void escribir_diario(const std::string& texto);
@@ -78,6 +90,8 @@ public:
     bool proxima_meta(Meta& m) const;   // la pendiente más antigua
     void cerrar_meta(const std::string& id, const std::string& estado, const std::string& resultado);
     void contar_intento_meta(const std::string& id);
+    void fijar_plan_meta(const std::string& id, const std::vector<std::string>& plan);
+    void avanzar_meta(const std::string& id, const std::string& nota);
 
     // estadísticas acumuladas (persisten entre arranques)
     json estadisticas() const;
@@ -88,7 +102,10 @@ private:
     void guardar_recuerdos();
     void guardar_estadisticas();
     void guardar_metas();
+    void guardar_vectores();
     std::vector<Meta> metas_;
+    struct Vector { std::string modelo; std::vector<float> v; };
+    std::map<std::string, Vector> vectores_;
     fs::path dir_;
     mutable std::mutex mu_;
     std::vector<Turno> turnos_;

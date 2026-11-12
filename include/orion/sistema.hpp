@@ -1,5 +1,6 @@
 // Sistema: medir el hardware (para que Orion conozca sus límites) y ejecutar procesos (git, guardián, herramientas).
 #pragma once
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -21,11 +22,13 @@ struct ResultadoProceso {
     int codigo = -1;           // -1: no se pudo ejecutar
     std::string salida;        // stdout + stderr
     bool tiempo_agotado = false;
+    bool cancelado = false;
 };
 // Ejecuta y captura la salida. args[0] se busca en el PATH.
 // entrada: texto que recibe por stdin (vacío = nada).
+// cancelar: si se pone a true, se mata el proceso (y sus hijos) enseguida.
 ResultadoProceso ejecutar_proceso(const std::vector<std::string>& args, const fs::path& directorio = {}, int timeout_s = 60,
-                                  const std::string& entrada = "");
+                                  const std::string& entrada = "", const std::atomic<bool>* cancelar = nullptr);
 // Ejecuta una orden de la shell del sistema (cmd.exe en Windows, /bin/sh en Linux), con su salida en UTF-8.
 ResultadoProceso ejecutar_shell(const std::string& comando, const fs::path& directorio = {}, int timeout_s = 120);
 // Ejecuta compartiendo la consola (para el guardián). Devuelve el código de salida.

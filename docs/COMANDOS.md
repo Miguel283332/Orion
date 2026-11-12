@@ -1,38 +1,80 @@
 # Comandos
 
-Todo lo que escribas sin `/` es conversación. Los comandos se atienden al momento, aunque Orion esté pensando o respondiendo.
+Lo que escribas sin `/` es conversación. Los comandos se atienden al momento, aunque Orion esté pensando o respondiendo. En la interfaz web también funcionan, salvo `/salir` y `/reinicia`.
+
+## Estado y medidas
 
 | Comando | Qué hace |
 |---|---|
 | `/ayuda` | lista de comandos |
-| `/estado` | qué está haciendo, ritmo, tiempo encendida (esta vez y en total), arranques, llamadas al modelo, tokens generados, última velocidad, reflexiones, mensajes en cola |
-| `/modelo` | modelo en uso: **parámetros** (aproximado y exacto), familia, cuantización, contexto en uso y máximo, **memoria que ocupa** (RAM y VRAM), si se ejecuta en CPU o GPU, tokens/s medidos |
-| `/modelo usar <nombre>` | cambiar de modelo (se aplica al terminar lo que esté haciendo y se guarda en `config.json`) |
-| `/hardware` | sistema operativo, CPU e hilos, RAM total y libre, memoria de Orion (sin el modelo), disco libre |
-| `/memoria` | número de recuerdos por tipo, turnos de conversación, entradas de diario, tamaño de `yo.md` y espacio en disco de `datos/` |
-| `/recuerdos [n]` | últimos `n` recuerdos (15 por defecto) con su id |
-| `/recuerda <texto>` | guardar un recuerdo a mano |
-| `/olvida <id>` | borrar un recuerdo (por ejemplo `/olvida r12`) |
-| `/buscar <texto>` | buscar en recuerdos y conversaciones |
-| `/diario [n]` | últimas `n` entradas del diario (1 por defecto) |
-| `/yo` | su documento sobre sí misma (`yo.md`) |
-| `/metas` | sus metas de aprendizaje: pendientes, hechas (con el resumen de lo aprendido) o fallidas |
-| `/aprende <tema>` | ponerle una meta; trabaja en ella a solas cuando no le hablas y te avisa con `★` al terminar |
-| `/acciones [n]` | últimas `n` acciones con herramientas (10 por defecto): fecha, origen, argumentos y resultado |
-| `/permisos [total\|lectura\|ninguno]` | qué herramientas puede usar (por defecto `total`; ver [ACCESO_TOTAL.md](ACCESO_TOTAL.md)) |
-| `/reflexiona` | reflexionar ahora sobre la conversación reciente |
-| `/pausa` | dejar de pensar a solas (sigue respondiéndote) |
-| `/sigue` | volver a pensar a solas |
-| `/ritmo [bajo\|medio\|alto]` | cada cuánto piensa a solas: 15 min, 2 min o 20 s (se guarda) |
-| `/para` | cortar la respuesta que está escribiendo |
-| `/versiones` | últimas versiones de su código (git), si arrancó dentro del repositorio |
+| `/estado` | qué está haciendo, ritmo, tiempo encendida (esta vez y en total), llamadas, tokens, velocidad, reflexiones, cola |
+| `/modelo` | **parámetros** (aproximado y exacto), familia, cuantización, contexto, **memoria que ocupa** (RAM/VRAM), si va en CPU o GPU, tokens/s |
+| `/modelo usar <nombre>` | cambiar el modelo base (se guarda) |
+| `/hardware` | sistema, CPU e hilos, RAM total y libre, memoria de Orion, disco libre |
+| `/limites` | si el hardware la limita (velocidad, RAM, contexto) y qué propone |
 | `/config` | configuración actual |
+
+## Memoria
+
+| Comando | Qué hace |
+|---|---|
+| `/memoria` | recuerdos por tipo, cuántos están **indexados por significado**, turnos, diario, `yo.md`, espacio en disco |
+| `/recuerdos [n]` | últimos `n` recuerdos con su id |
+| `/recuerda <texto>` · `/olvida <id>` | guardar o borrar un recuerdo |
+| `/buscar <texto>` | buscar por palabras **y por significado** en recuerdos y conversaciones |
+| `/diario [n]` | últimas `n` entradas del diario |
+| `/yo` | su documento sobre sí misma |
+| `/reflexiona` | reflexionar ahora sobre la conversación |
+
+## Aprender
+
+| Comando | Qué hace |
+|---|---|
+| `/metas` | sus metas: plan, paso actual, estado y resumen de lo aprendido |
+| `/aprende <tema>` | ponerle una meta; la trabaja a solas paso a paso y avisa con `★` |
+| `/habilidades` | lo que ya sabe hacer (scripts verificados), con usos y éxitos |
+| `/habilidades borrar <nombre>` | borrar una habilidad |
+| `/practica` | su práctica con juez real: nivel (1-5), aciertos, últimos ejercicios |
+| `/practica ahora` | practicar ya |
+
+## Automejora
+
+| Comando | Qué hace |
+|---|---|
+| `/mejorate` | un ciclo ahora: se mide, propone un cambio, lo mide y solo se lo queda si mejora sin empeorar el examen |
+| `/mejoras` | historial: cada propuesta, sus mediciones (banco y examen), si se aceptó y por qué, commit; aviso si el examen cambió |
+| `/volver <n>` | deshacer la mejora `n` (restaura sus instrucciones y parámetros, con commit) |
+| `/versiones` | últimas versiones de su código (git) |
+
+## Dispositivos y web
+
+| Comando | Qué hace |
+|---|---|
+| `/dispositivos` | este ordenador y los que registraste: si responden, su velocidad, dónde piensa ahora (▶) |
+| `/dispositivo añadir <nombre> <url> [modelo]` | registrar otro ordenador tuyo con Ollama (ver [ESCALAR.md](ESCALAR.md)) |
+| `/dispositivo usar <nombre\|local>` · `quitar <nombre>` · `medir` · `auto on\|off` | gestionar los dispositivos |
+| `/web` · `/web abrir` | dirección de la interfaz web local (con su token), o abrirla en el navegador |
+
+## Control
+
+| Comando | Qué hace |
+|---|---|
+| `/acciones [n]` | últimas acciones con herramientas: fecha, origen (chat, meta, evaluación), argumentos y resultado |
+| `/permisos [total\|lectura\|ninguno]` | qué herramientas puede usar (ver [ACCESO_TOTAL.md](ACCESO_TOTAL.md)) |
+| `/pausa` · `/sigue` | dejar o volver a pensar a solas (siempre te sigue respondiendo) |
+| `/ritmo [bajo\|medio\|alto]` | cada cuánto piensa a solas si no le hablas: 15 min, 2 min o 20 s. Con trabajo pendiente encadena las tareas, salvo con `bajo` |
+| `/para` | cortar la respuesta que está escribiendo |
 | `/reinicia` | reiniciarse (el guardián la vuelve a arrancar) |
-| `/salir` | apagarse; antes termina de responder lo que le hayas pedido |
+| `/salir` | apagarse; antes termina lo que le pediste |
 
-## Sin comando: pedirle cosas
+## Pedirle cosas
 
-Además de conversar, puedes pedirle que **haga** cosas: "mira qué hay en mi carpeta de Descargas", "busca en internet…", "crea un script que…", "lee tu código y explícame cómo funciona tu memoria", "mejora tu forma de resumir el diario, compílate y reiníciate". Ella decide qué herramientas usar y verás cada paso.
+Además de conversar, puedes pedirle que **haga** cosas. Ella decide qué herramientas usar y verás cada paso. Por ejemplo:
+- "mira qué hay en mi carpeta de Descargas"
+- "busca en internet…"
+- "crea un script que… y guárdalo como habilidad"
+- "lee tu código y explícame cómo funciona tu memoria"
+- "aprende a usar ffmpeg"
 
 ## Opciones al arrancar
 
@@ -44,8 +86,12 @@ Además de conversar, puedes pedirle que **haga** cosas: "mira qué hay en mi ca
 | `--modelo M` | el de `datos/config.json` (al principio `qwen2.5:3b`) |
 | `--ollama URL` | `http://127.0.0.1:11434` (o la variable `OLLAMA_HOST`) |
 | `--repo DIR` | la carpeta actual si es el repositorio; si no, se busca hacia arriba desde el ejecutable |
+| `--prompts DIR` | `<repo>/prompts` |
+| `--web-puerto N` | el de `config.json` (7860); `0` desactiva la web |
 | `--sin-autonomia` | piensa a solas |
 | `--sin-color` | colores si es una terminal |
+| `--evaluar ARCHIVO` | modo medición: ejecuta las tareas, imprime `RESULTADO_EVALUACION {...}` y termina (lo usa la automejora) |
+| `--temperatura X` · `--max-pasos N` · `--num-ctx N` | sustituyen a los de `config.json` |
 
 ## `datos/config.json`
 
@@ -53,12 +99,18 @@ Se crea en el primer arranque. Lo puedes editar tú (con Orion apagada) y tambi�
 
 | Clave | Por defecto | Qué es |
 |---|---|---|
-| `modelo` | `qwen2.5:3b` | el único modelo que usa para todo |
-| `ollama` | `http://127.0.0.1:11434` | dirección de Ollama (otro PC tuyo: `http://IP:11434`) |
+| `modelo` | `qwen2.5:3b` | el modelo base |
+| `ollama` | `http://127.0.0.1:11434` | Ollama de este ordenador |
 | `ritmo` | `medio` | cada cuánto piensa a solas |
 | `permisos` | `total` | `total`, `lectura` o `ninguno` |
-| `num_ctx` | `8192` | tokens de contexto (más = más memoria de trabajo, más lento) |
+| `num_ctx` | `8192` | tokens de contexto |
 | `num_predict` | `512` | longitud máxima de cada respuesta |
-| `temperatura` | `0.7` | creatividad al conversar |
-| `max_pasos` | `10` | herramientas por respuesta como máximo |
+| `temperatura` | `0.7` | creatividad al conversar (la automejora puede ajustarla) |
+| `max_pasos` | `10` | herramientas por respuesta como máximo (la automejora puede ajustarlo) |
 | `cmake` | `cmake` | ruta a cmake (para compilarse a sí misma) |
+| `practica_cada_min` | `60` | práctica con juez real a solas (0 = nunca) |
+| `automejora_cada_h` | `12` | ciclo de automejora a solas (0 = nunca) |
+| `web_puerto` | `7860` | interfaz web local (0 = sin web) |
+| `dispositivos` | `[]` | otros ordenadores tuyos: `[{"nombre": "pc", "ollama": "http://IP:11434", "modelo": "qwen2.5:7b"}]` |
+| `dispositivo` | `local` | dónde piensa ahora |
+| `dispositivo_auto` | `true` | pasarse sola al más rápido |

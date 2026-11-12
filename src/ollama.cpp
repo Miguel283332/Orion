@@ -4,8 +4,6 @@
 
 namespace orion {
 
-Ollama::Ollama(const std::string& url, std::string modelo) : http_(url), modelo_(std::move(modelo)) {}
-
 static std::string error_de(const RespuestaHttp& r) {
     if (!r.error.empty())
         return r.error + ". ¿Está Ollama en marcha? (abre la aplicación Ollama o ejecuta `ollama serve`)";
@@ -14,8 +12,42 @@ static std::string error_de(const RespuestaHttp& r) {
     return "Ollama respondió " + std::to_string(r.estado) + ": " + recortar(r.cuerpo, 200);
 }
 
+Ollama::Ollama(const std::string& url, std::string modelo) : http_(url), url_(url), modelo_(std::move(modelo)) {}
+
+std::string Ollama::modelo() const { std::lock_guard<std::mutex> l(mu_); return modelo_; }
+std::string Ollama::url() const { std::lock_guard<std::mutex> l(mu_); return url_; }
+ClienteHttp Ollama::cliente() const { std::lock_guard<std::mutex> l(mu_); return http_; }
+void Ollama::cambiar_modelo(const std::string& m) { std::lock_guard<std::mutex> l(mu_); modelo_ = m; }
+void Ollama::cambiar_url(const std::string& url) {
+    ClienteHttp nuevo(url);
+    std::lock_guard<std::mutex> l(mu_);
+    http_ = nuevo;
+    url_ = url;
+}
+
+bool Ollama::embed(const std::vector<std::string>& textos, std::vector<std::vector<float>>& vectores, std::string* error) const {
+    vectores.clear();
+    if (textos.empty()) return true;
+    json entrada = json::array();
+    for (auto& t : textos) entrada.push_back(recortar(t, 2000));
+    auto r = cliente().post("/api/embed", json{{"model", modelo()}, {"input", entrada}, {"keep_alive", "60m"}}.dump(), 300);
+    json j = json::parse(r.cuerpo, nullptr, false);
+    if (r.estado != 200 || !j.is_object() || !j.contains("embeddings") || !j["embeddings"].is_array() || j["embeddings"].size() != textos.size()) {
+        if (error) *error = r.estado == 200 ? "respuesta de /api/embed no válida" : error_de(r);
+        return false;
+    }
+    for (auto& v : j["embeddings"]) {
+        std::vector<float> f;
+        f.reserve(v.size());
+        for (auto& x : v) f.push_back(x.get<float>());
+        vectores.push_back(std::move(f));
+    }
+    return true;
+}
+
+
 bool Ollama::disponible(std::string* version) const {
-    auto r = http_.get("/api/version", 5);
+    auto r = cliente().get("/api/version", 5);
     if (r.estado != 200) return false;
     json j = json::parse(r.cuerpo, nullptr, false);
     if (version && j.is_object()) *version = j.value("version", std::string("?"));
@@ -26,12 +58,12 @@ ResultadoGeneracion Ollama::chat(const json& mensajes, const OpcionesGeneracion&
                                  const std::atomic<bool>* cancelar, const json* herramientas) const {
     json opciones = {{"temperature", op.temperatura}, {"num_ctx", op.num_ctx}, {"num_predict", op.num_predict}};
     if (op.semilla >= 0) opciones["seed"] = op.semilla;
-    json cuerpo = {{"model", modelo_}, {"messages", mensajes}, {"stream", true}, {"keep_alive", "60m"}, {"options", opciones}};
+    json cuerpo = {{"model", modelo()}, {"messages", mensajes}, {"stream", true}, {"keep_alive", "60m"}, {"options", opciones}};
     if (op.json) cuerpo["format"] = "json";
     if (herramientas && !herramientas->empty()) cuerpo["tools"] = *herramientas;
     ResultadoGeneracion res;
     std::string error_stream;
-    auto r = http_.post_stream("/api/chat", cuerpo.dump(), [&](const std::string& linea) {
+    auto r = cliente().post_stream("/api/chat", cuerpo.dump(), [&](const std::string& linea) {
         json j = json::parse(linea, nullptr, false);
         if (!j.is_object()) return true;
         if (j.contains("error")) { error_stream = j["error"].get<std::string>(); return false; }
@@ -61,6 +93,8 @@ ResultadoGeneracion Ollama::chat(const json& mensajes, const OpcionesGeneracion&
 
 InfoModelo Ollama::info() const {
     InfoModelo i;
+    std::string modelo_ = modelo();
+    ClienteHttp http_ = cliente();
     i.nombre = modelo_;
     auto r = http_.post("/api/show", json{{"model", modelo_}}.dump(), 30);
     if (r.estado != 200) {

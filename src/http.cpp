@@ -179,7 +179,7 @@ RespuestaHttp ClienteHttp::peticion(const std::string& metodo, const std::string
     }
     fijar_timeout_recepcion(s, 200);
     std::string req = metodo + " " + ruta + " HTTP/1.1\r\nHost: " + host_ + ":" + puerto +
-                      "\r\nUser-Agent: orion\r\nAccept: */*\r\nConnection: close\r\n";
+                      "\r\nUser-Agent: orion\r\nAccept: */*\r\nConnection: close\r\n" + extra_;
     if (metodo == "POST") req += "Content-Type: application/json\r\nContent-Length: " + std::to_string(cuerpo.size()) + "\r\n";
     req += "\r\n" + cuerpo;
     if (!enviar_todo(s, req)) {
@@ -280,7 +280,7 @@ int ServidorHttp::iniciar(int puerto, const std::string& ip) {
 void ServidorHttp::parar() {
     if (!activo_.exchange(false)) return;
     if (hilo_.joinable()) hilo_.join();
-    for (auto& t : clientes_) if (t.joinable()) t.join();
+    for (auto& c : clientes_) if (c.hilo.joinable()) c.hilo.join();
     clientes_.clear();
     cerrar_socket(static_cast<sock_t>(escucha_));
 }
@@ -292,10 +292,19 @@ void ServidorHttp::bucle() {
         FD_ZERO(&fds);
         FD_SET(s, &fds);
         timeval t{0, 100000};
+        for (auto it = clientes_.begin(); it != clientes_.end();) {   // recoger los hilos ya terminados
+            if (it->terminado->load()) {
+                if (it->hilo.joinable()) it->hilo.join();
+                it = clientes_.erase(it);
+            } else {
+                ++it;
+            }
+        }
         if (select(static_cast<int>(s) + 1, &fds, nullptr, nullptr, &t) <= 0) continue;
         sock_t c = ::accept(s, nullptr, nullptr);
         if (c == SOCK_INVALIDO) continue;
-        clientes_.emplace_back([this, c] { atender(static_cast<long long>(c)); });
+        auto fin = std::make_shared<std::atomic<bool>>(false);
+        clientes_.push_back({std::thread([this, c, fin] { atender(static_cast<long long>(c)); *fin = true; }), fin});
     }
 }
 
@@ -318,9 +327,13 @@ void ServidorHttp::atender(long long sl) {
                 auto lineas = split_lines(crudo.substr(0, fin));
                 auto partes = split(lineas.empty() ? "" : lineas[0], ' ');
                 if (partes.size() >= 2) { p.metodo = partes[0]; p.ruta = partes[1]; }
-                for (auto& l : lineas) {
+                for (size_t i = 1; i < lineas.size(); ++i) {
+                    const std::string& l = lineas[i];
                     size_t dp = l.find(':');
-                    if (dp != std::string::npos && minus(trim(l.substr(0, dp))) == "content-length") longitud = std::atoll(trim(l.substr(dp + 1)).c_str());
+                    if (dp == std::string::npos) continue;
+                    std::string k = minus(trim(l.substr(0, dp))), v = trim(l.substr(dp + 1));
+                    p.cabeceras[k] = v;
+                    if (k == "content-length") longitud = std::atoll(v.c_str());
                 }
             }
         }
@@ -336,11 +349,13 @@ void ServidorHttp::atender(long long sl) {
             r.trozos = {std::string("{\"error\":\"") + e.what() + "\"}"};
         }
         std::string estado = std::to_string(r.estado) + (r.estado == 200 ? " OK" : " Error");
+        std::string extra;
+        for (auto& [k, v] : r.cabeceras) extra += k + ": " + v + "\r\n";
         if (r.trozos.size() <= 1) {
             std::string cuerpo = r.trozos.empty() ? "" : r.trozos[0];
             enviar_todo(c, "HTTP/1.1 " + estado + "\r\nContent-Type: " + r.tipo + "\r\nContent-Length: " + std::to_string(cuerpo.size()) +
-                               "\r\nConnection: close\r\n\r\n" + cuerpo);
-        } else if (enviar_todo(c, "HTTP/1.1 " + estado + "\r\nContent-Type: " + r.tipo + "\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")) {
+                               "\r\n" + extra + "Connection: close\r\n\r\n" + cuerpo);
+        } else if (enviar_todo(c, "HTTP/1.1 " + estado + "\r\nContent-Type: " + r.tipo + "\r\nTransfer-Encoding: chunked\r\n" + extra + "Connection: close\r\n\r\n")) {
             char hex[32];
             bool ok = true;
             for (auto& t : r.trozos) {
