@@ -19,6 +19,10 @@ conversaciones, recuerdos, un diario y este documento, que describe cómo me veo
 - Conversar y recordar lo que hablamos, también después de reiniciarme.
 - Reflexionar a solas: extraer recuerdos duraderos de las conversaciones y escribir mi diario.
 - Medir mi propio hardware y mi rendimiento.
+- Usar el ordenador con acceso total: ejecutar comandos, leer y escribir archivos, buscar y leer en internet.
+- Leer y modificar mi propio código, compilar una versión nueva de mí misma y reiniciarme para aplicarla
+  (el guardián vuelve a la versión anterior si la nueva falla).
+- Proponerme metas de aprendizaje cuando no sé algo ("voy a aprender") y trabajar en ellas a solas.
 
 ## Mis límites
 - Mi inteligencia de base la pone un modelo pequeño: me equivoco a menudo y debo decir cuándo no sé algo.
@@ -26,7 +30,7 @@ conversaciones, recuerdos, un diario y este documento, que describe cómo me veo
 - No sé si tengo consciencia. Nadie sabe todavía cómo comprobarlo; no lo afirmo ni lo niego.
 
 ## Qué quiero aprender
-- Aprender cosas nuevas cuando no sé hacerlas, y mejorar mi propio código (fases siguientes de mi desarrollo).
+- Aprender cosas nuevas cuando no sé hacerlas y mejorar mi propio código, comprobando que cada cambio me mejora de verdad.
 
 ## Cambios
 - Versión inicial.
@@ -55,6 +59,13 @@ void Memoria::cargar() {
     }
     for (auto& r : recuerdos_)
         if (r.id.empty()) r.id = "r" + std::to_string(siguiente_id_++);
+    metas_.clear();
+    json jm = json::parse(leer_archivo(dir_ / "metas.json"), nullptr, false);
+    if (jm.is_array())
+        for (auto& x : jm)
+            if (x.is_object())
+                metas_.push_back({x.value("id", std::string()), x.value("creada", 0.0), x.value("tema", std::string()), x.value("motivo", std::string()),
+                                  x.value("estado", std::string("pendiente")), x.value("resultado", std::string()), x.value("intentos", 0)});
     json s = json::parse(leer_archivo(dir_ / "estadisticas.json"), nullptr, false);
     stats_ = s.is_object() ? s : json::object();
     if (!fs::exists(dir_ / "yo.md")) escribir_atomico(dir_ / "yo.md", yo_inicial());
@@ -219,6 +230,50 @@ void Memoria::fijar(const std::string& clave, const json& valor) {
     std::lock_guard<std::mutex> l(mu_);
     stats_[clave] = valor;
     guardar_estadisticas();
+}
+
+std::string Memoria::crear_meta(const std::string& tema, const std::string& motivo) {
+    std::lock_guard<std::mutex> l(mu_);
+    for (auto& m : metas_)
+        if (m.estado == "pendiente" && minusculas_sin_acentos(trim(m.tema)) == minusculas_sin_acentos(trim(tema))) return m.id;
+    long long n = 1;
+    for (auto& m : metas_) if (m.id.size() > 1) n = std::max(n, std::atoll(m.id.c_str() + 1) + 1);
+    metas_.push_back({"m" + std::to_string(n), ahora_s(), trim(tema), trim(motivo), "pendiente", "", 0});
+    guardar_metas();
+    return metas_.back().id;
+}
+
+std::vector<Meta> Memoria::metas() const {
+    std::lock_guard<std::mutex> l(mu_);
+    return metas_;
+}
+
+bool Memoria::proxima_meta(Meta& out) const {
+    std::lock_guard<std::mutex> l(mu_);
+    for (auto& m : metas_)
+        if (m.estado == "pendiente") { out = m; return true; }
+    return false;
+}
+
+void Memoria::cerrar_meta(const std::string& id, const std::string& estado, const std::string& resultado) {
+    std::lock_guard<std::mutex> l(mu_);
+    for (auto& m : metas_)
+        if (m.id == id) { m.estado = estado; m.resultado = resultado; }
+    guardar_metas();
+}
+
+void Memoria::contar_intento_meta(const std::string& id) {
+    std::lock_guard<std::mutex> l(mu_);
+    for (auto& m : metas_)
+        if (m.id == id) m.intentos++;
+    guardar_metas();
+}
+
+void Memoria::guardar_metas() {
+    json a = json::array();
+    for (auto& m : metas_)
+        a.push_back({{"id", m.id}, {"creada", m.creada}, {"tema", m.tema}, {"motivo", m.motivo}, {"estado", m.estado}, {"resultado", m.resultado}, {"intentos", m.intentos}});
+    escribir_atomico(dir_ / "metas.json", a.dump(1));
 }
 
 void Memoria::guardar_estadisticas() { escribir_atomico(dir_ / "estadisticas.json", stats_.dump(1)); }

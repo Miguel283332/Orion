@@ -23,18 +23,21 @@ bool Ollama::disponible(std::string* version) const {
 }
 
 ResultadoGeneracion Ollama::chat(const json& mensajes, const OpcionesGeneracion& op, const std::function<void(const std::string&)>& por_trozo,
-                                 const std::atomic<bool>* cancelar) const {
+                                 const std::atomic<bool>* cancelar, const json* herramientas) const {
     json opciones = {{"temperature", op.temperatura}, {"num_ctx", op.num_ctx}, {"num_predict", op.num_predict}};
     if (op.semilla >= 0) opciones["seed"] = op.semilla;
     json cuerpo = {{"model", modelo_}, {"messages", mensajes}, {"stream", true}, {"keep_alive", "60m"}, {"options", opciones}};
     if (op.json) cuerpo["format"] = "json";
+    if (herramientas && !herramientas->empty()) cuerpo["tools"] = *herramientas;
     ResultadoGeneracion res;
     std::string error_stream;
     auto r = http_.post_stream("/api/chat", cuerpo.dump(), [&](const std::string& linea) {
         json j = json::parse(linea, nullptr, false);
         if (!j.is_object()) return true;
         if (j.contains("error")) { error_stream = j["error"].get<std::string>(); return false; }
-        if (j.contains("message") && j["message"].contains("content")) {
+        if (j.contains("message") && j["message"].contains("tool_calls") && j["message"]["tool_calls"].is_array())
+            for (auto& c : j["message"]["tool_calls"]) res.llamadas.push_back(c);
+        if (j.contains("message") && j["message"].contains("content") && j["message"]["content"].is_string()) {
             std::string t = j["message"]["content"].get<std::string>();
             if (!t.empty()) {
                 res.texto += t;
@@ -73,6 +76,18 @@ InfoModelo Ollama::info() const {
         i.familia = d.value("family", std::string());
         i.cuantizacion = d.value("quantization_level", std::string());
         i.tamano_parametros = d.value("parameter_size", std::string());
+    }
+    if (j.contains("capabilities") && j["capabilities"].is_array())
+        for (auto& c : j["capabilities"]) if (c == "tools") i.admite_herramientas = true;
+    for (auto& l : split_lines(j.value("modelfile", std::string()))) {
+        if (empieza_por(l, "FROM ")) {
+            std::string ruta = trim(l.substr(5));
+            std::error_code ec;
+            if (fs::exists(ruta, ec)) {
+                i.ruta_pesos = ruta;
+                i.bytes_pesos = static_cast<double>(fs::file_size(ruta, ec));
+            }
+        }
     }
     if (j.contains("model_info") && j["model_info"].is_object()) {
         for (auto& [k, v] : j["model_info"].items()) {

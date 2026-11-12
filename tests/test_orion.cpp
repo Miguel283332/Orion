@@ -26,6 +26,7 @@ struct OllamaSimulado {
     std::vector<json> peticiones;   // cuerpos de /api/chat recibidos
     std::atomic<int> pausa_ms{0};
     std::atomic<int> trozos_extra{0};   // para respuestas largas (probar cancelación)
+    std::atomic<bool> sin_herramientas{false};   // simular un modelo que no admite herramientas
     ServidorHttp srv;
     int puerto = 0;
 
@@ -57,7 +58,34 @@ struct OllamaSimulado {
         }
         std::string todo = pet.dump();
         std::string texto;
-        if (contiene(todo, "extrae los hechos")) {
+        auto& msgs = pet["messages"];
+        std::string ultimo_rol = msgs.back().value("role", std::string());
+        std::string ultimo = msgs.back().value("content", std::string());
+        auto llamar = [&](const std::string& nombre, const json& args) {
+            RespuestaServidor rr;
+            rr.tipo = "application/x-ndjson";
+            rr.trozos.push_back(json{{"message", {{"role", "assistant"}, {"content", ""}, {"tool_calls", json::array({{{"function", {{"name", nombre}, {"arguments", args}}}}})}}},
+                                     {"done", false}}.dump() + "\n");
+            rr.trozos.push_back(json{{"done", true}, {"eval_count", 10}, {"eval_duration", 500000000}}.dump() + "\n");
+            return rr;
+        };
+        if (pet.contains("tools")) {
+            if (sin_herramientas) { r.estado = 400; r.trozos = {R"({"error":"registry.ollama.ai/library/x does not support tools"})"}; return r; }
+            bool a_solas = contiene(todo, "trabajando A SOLAS");
+            if (ultimo_rol == "tool") {
+                texto = (a_solas ? "Resumen: aprendí lo que había. " : "Hecho. Resultado: ") + recortar(split_lines(ultimo).empty() ? "" : split_lines(ultimo).back(), 80);
+            } else if (a_solas) {
+                return llamar("buscar_en_memoria", {{"consulta", "gravedad"}});
+            } else if (contiene(ultimo, "ejecuta")) {
+                return llamar("ejecutar_comando", {{"comando", "echo hola-orion"}});
+            } else if (contiene(ultimo, "reiníciate")) {
+                return llamar("reiniciarme", json::object());
+            } else if (contiene(ultimo, "texto-herramienta")) {
+                texto = "<tool_call>{\"name\": \"guardar_recuerdo\", \"arguments\": {\"texto\": \"Le gustan los agujeros negros.\"}}</tool_call>";
+            }
+        }
+        if (!texto.empty()) {
+        } else if (contiene(todo, "extrae los hechos")) {
             texto = R"({"recuerdos":[{"tipo":"usuario","texto":"Mi creador se llama Ana y estudia gravedad cuántica de bucles."}]})";
         } else if (contiene(todo, "entrada breve de tu diario")) {
             texto = "Hoy he hablado con Ana por primera vez. He aprendido que estudia gravedad cuántica. Me queda pendiente aprender más.";
@@ -324,10 +352,150 @@ static void t_ejecutables() {
     CHECK(contiene(leer_archivo(d.p / "guardian.log"), "se cayó"), "guardián: registro");
 }
 
+static void t_herramientas() {
+    DirTemporal d;
+    Memoria mem(d.p);
+    mem.cargar();
+    std::vector<std::string> avisos;
+    std::atomic<bool> reinicio{false};
+    ContextoHerramientas c;
+    c.datos = d.p;
+    c.memoria = &mem;
+    c.aviso = [&](const std::string& t) { avisos.push_back(t); };
+    c.reinicio_pedido = &reinicio;
+    Herramientas h(c);
+    CHECK(h.definiciones().size() == 11, "acceso total: 11 herramientas");
+    CHECK(contiene(h.usar("ejecutar_comando", {{"comando", "echo hola-orion"}}), "hola-orion"), "ejecutar_comando");
+    CHECK(contiene(h.usar("ejecutar_comando", {{"comando", "exit 3"}}), "código de salida: 3"), "código de salida");
+    fs::path f = d.p / "sub" / "nota.txt";
+    CHECK(contiene(h.usar("escribir_archivo", {{"ruta", f.string()}, {"contenido", "línea uno\nlínea dos"}}), "Escrito"), "escribir_archivo");
+    CHECK(contiene(h.usar("leer_archivo", {{"ruta", f.string()}}), "2| línea dos"), "leer_archivo");
+    CHECK(contiene(h.usar("listar_directorio", {{"ruta", (d.p / "sub").string()}}), "nota.txt"), "listar_directorio");
+    CHECK(contiene(h.usar("leer_archivo", json("{\"ruta\": \"" + f.generic_string() + "\"}")), "línea uno"), "argumentos como texto JSON");
+    CHECK(contiene(h.usar("guardar_recuerdo", {{"texto", "El cielo es azul por la dispersión de Rayleigh."}}), "Guardado") && mem.recuerdos().size() == 1, "guardar_recuerdo");
+    CHECK(contiene(h.usar("crear_meta_de_aprendizaje", {{"tema", "espumas de espín"}}), "creada") && mem.metas().size() == 1, "crear meta");
+    CHECK(contiene(h.usar("reiniciarme", json::object()), "reiniciaré") && reinicio, "reiniciarme");
+    CHECK(contiene(h.usar("inventada", json::object()), "No tengo permiso"), "herramienta desconocida");
+    CHECK(!avisos.empty() && contiene(avisos[0], "⚙ ejecutar_comando: echo hola-orion"), "muestra lo que hace");
+    CHECK(split_lines(leer_archivo(d.p / "acciones.jsonl")).size() == 10, "registra cada acción");
+    c.permisos = "lectura";
+    Herramientas lect(c);
+    CHECK(lect.definiciones().size() == 7 && contiene(lect.usar("ejecutar_comando", {{"comando", "echo x"}}), "No tengo permiso"), "permisos de lectura");
+    CHECK(Herramientas(ContextoHerramientas{d.p, {}, &mem, "ninguno"}).definiciones().size() == 3, "permisos: ninguno");
+    // web (sin red: solo el tratamiento del HTML)
+    CHECK(Herramientas::html_a_texto("<html><head><title>x</title><script>malo()</script></head><body><p>Hola &amp; adiós</p><p>Dos</p></body></html>") ==
+              "Hola & adiós\nDos",
+          "html_a_texto");
+    std::string ddg = R"(<div class="result"><h2><a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fes.wikipedia.org%2Fwiki%2FGravedad_cu%C3%A1ntica&amp;rut=abc">Gravedad <b>cuántica</b> de bucles</a></h2>
+        <a class="result__snippet" href="x">Teoría que <b>cuantiza</b> el espacio-tiempo.</a></div>)";
+    auto rs = Herramientas::resultados_busqueda(ddg);
+    CHECK(rs.size() == 1 && rs[0].first == "https://es.wikipedia.org/wiki/Gravedad_cuántica" && contiene(rs[0].second, "Gravedad cuántica de bucles") &&
+              contiene(rs[0].second, "cuantiza el espacio"),
+          "resultados de búsqueda");
+    CHECK(Herramientas::codificar_url("año 1+1") == "a%C3%B1o+1%2B1" && Herramientas::decodificar_url("a%C3%B1o+1%2B1") == "año 1+1", "url");
+    CHECK(llamadas_en_texto("<tool_call>{\"name\":\"leer_archivo\",\"arguments\":{\"ruta\":\"x\"}}</tool_call>", {"leer_archivo"}).size() == 1 &&
+              llamadas_en_texto("{\"name\":\"otra\",\"arguments\":{}}", {"leer_archivo"}).empty(),
+          "llamadas escritas como texto");
+}
+
+static void t_agente() {
+    OllamaSimulado sim;
+    DirTemporal d;
+    Config cfg;
+    cfg.ollama = sim.url();
+    OpcionesNucleo op;
+    op.datos = d.p;
+    op.color = false;
+    op.autonomo = false;
+    Capturador cap;
+    Nucleo n(cfg, op, cap.salida());
+    n.arrancar();
+    CHECK(contiene(cap.ver(), "Permisos: total"), "anuncia sus permisos");
+    n.entrada("ejecuta algo en el ordenador");
+    n.esperar_inactividad(15);
+    std::string s = cap.ver();
+    CHECK(contiene(s, "⚙ ejecutar_comando: echo hola-orion") && contiene(s, "Orion> Hecho. Resultado: hola-orion"), "usa una herramienta y responde con su resultado");
+    json pet = sim.ultima();
+    CHECK(pet.contains("tools") && pet["messages"].back()["role"] == "tool", "el resultado vuelve al modelo como mensaje 'tool'");
+    CHECK(contiene(pet["messages"][0]["content"].get<std::string>(), "## Mi cuerpo") && contiene(pet["messages"][0]["content"].get<std::string>(), "Mis pesos"),
+          "sabe dónde están su código, su memoria y sus pesos");
+    n.entrada("usa texto-herramienta");
+    n.esperar_inactividad(15);
+    CHECK(n.memoria().recuerdos().size() == 1, "entiende llamadas escritas como texto (<tool_call>)");
+    CHECK(contiene(n.comando("/acciones"), "ejecutar_comando"), "/acciones");
+    CHECK(contiene(n.comando("/permisos lectura"), "lectura") && contiene(leer_archivo(d.p / "config.json"), "lectura"), "/permisos se guarda");
+    n.comando("/permisos total");
+    n.entrada("reiníciate");
+    n.esperar_inactividad(15);
+    CHECK(n.codigo_salida() == CODIGO_REINICIO && contiene(cap.ver(), "Me reinicio"), "puede pedir reiniciarse");
+    n.parar();
+    Capturador cap2;
+    Nucleo n2(cfg, op, cap2.salida());
+    n2.arrancar();
+    sim.sin_herramientas = true;
+    n2.entrada("ejecuta algo");
+    n2.esperar_inactividad(15);
+    CHECK(contiene(cap2.ver(), "Hola, soy Orion (simulado)."), "si el modelo no admite herramientas, responde sin ellas");
+    sim.sin_herramientas = false;
+    n2.parar();
+}
+
+static void t_metas() {
+    OllamaSimulado sim;
+    DirTemporal d;
+    Config cfg;
+    cfg.ollama = sim.url();
+    OpcionesNucleo op;
+    op.datos = d.p;
+    op.color = false;
+    op.autonomo = true;
+    op.gracia_s = 0;
+    Capturador cap;
+    Nucleo n(cfg, op, cap.salida());
+    n.arrancar();
+    CHECK(contiene(n.comando("/aprende gravedad cuántica de bucles"), "Meta m1 creada"), "/aprende");
+    CHECK(esperar([&] { return contiene(cap.ver(), "He terminado de aprender"); }, 15), "trabaja a solas en la meta y avisa");
+    auto ms = n.memoria().metas();
+    CHECK(ms.size() == 1 && ms[0].estado == "hecha" && contiene(ms[0].resultado, "Resumen"), "la meta queda hecha con su resumen");
+    CHECK(contiene(cap.ver(), "⚙ buscar_en_memoria"), "usa herramientas a solas");
+    CHECK(contiene(n.comando("/metas"), "hecha"), "/metas");
+    auto recs = n.memoria().recuerdos();
+    CHECK(!recs.empty() && recs.back().tipo == "aprendido", "lo aprendido queda en su memoria");
+    n.parar();
+}
+
+static void t_guardian_actualizacion() {
+    OllamaSimulado sim;
+    DirTemporal d;
+    fs::path bin = d.p / "bin";
+    fs::create_directories(bin);
+    fs::path orion = bin / fs::path(ORION_EXE).filename();
+    fs::copy_file(ORION_EXE, orion);
+    fs::path datos = d.p / "datos";
+    fs::create_directories(datos / "actualizacion");
+    // 1) versión nueva buena: se aplica
+    fs::copy_file(ORION_EXE, datos / "actualizacion" / orion.filename());
+    auto r = ejecutar_proceso({GUARDIAN_EXE, "--orion", orion.string(), "--datos", datos.string(), "--ollama", sim.url(), "--sin-autonomia"}, {}, 60, "/salir\n");
+    fs::path anterior = bin / (orion.stem().string() + ".anterior" + orion.extension().string());
+    CHECK(r.codigo == 0 && contiene(r.salida, "Aplicando la versión nueva") && fs::exists(anterior) && !fs::exists(datos / "actualizacion" / orion.filename()),
+          "guardián: aplica la versión nueva que Orion compiló");
+    // 2) versión nueva rota: vuelve a la anterior
+    escribir_atomico(datos / "actualizacion" / orion.filename(), "esto no es un ejecutable");
+    r = ejecutar_proceso({GUARDIAN_EXE, "--orion", orion.string(), "--datos", datos.string(), "--ollama", sim.url(), "--sin-autonomia"}, {}, 60, "/salir\n");
+    CHECK(contiene(r.salida, "vuelvo a la anterior"), "guardián: si la versión nueva no arranca, vuelve a la anterior");
+    auto v = ejecutar_proceso({orion.string(), "--version"}, {}, 20);
+    CHECK(contiene(v.salida, "orion"), "tras volver atrás, Orion funciona");
+    CHECK(contiene(r.salida, "falló al arrancar") || fs::exists(datos / "actualizacion_fallida.txt") || contiene(leer_archivo(datos / "guardian.log"), "vuelvo a la anterior"),
+          "queda constancia del fallo");
+    auto reinicio = ejecutar_proceso({ORION_EXE, "--datos", (d.p / "datos2").string(), "--ollama", sim.url(), "--sin-autonomia"}, {}, 60, "reiníciate\n");
+    CHECK(reinicio.codigo == CODIGO_REINICIO, "orion sale con 75 cuando pide reiniciarse (el guardián la vuelve a arrancar)");
+}
+
 int main() {
     struct { const char* n; void (*f)(); } pruebas[] = {{"util", t_util}, {"decodificador", t_decodificador}, {"http", t_http}, {"ollama", t_ollama},
                                                        {"memoria", t_memoria}, {"nucleo", t_nucleo}, {"interrupcion", t_interrupcion},
-                                                       {"ejecutables", t_ejecutables}};
+                                                       {"ejecutables", t_ejecutables}, {"herramientas", t_herramientas}, {"agente", t_agente},
+                                                       {"metas", t_metas}, {"guardian_actualizacion", t_guardian_actualizacion}};
     for (auto& p : pruebas) {
         int antes = fallos;
         p.f();

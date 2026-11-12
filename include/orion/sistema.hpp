@@ -26,6 +26,8 @@ struct ResultadoProceso {
 // entrada: texto que recibe por stdin (vacío = nada).
 ResultadoProceso ejecutar_proceso(const std::vector<std::string>& args, const fs::path& directorio = {}, int timeout_s = 60,
                                   const std::string& entrada = "");
+// Ejecuta una orden de la shell del sistema (cmd.exe en Windows, /bin/sh en Linux), con su salida en UTF-8.
+ResultadoProceso ejecutar_shell(const std::string& comando, const fs::path& directorio = {}, int timeout_s = 120);
 // Ejecuta compartiendo la consola (para el guardián). Devuelve el código de salida.
 int ejecutar_en_consola(const std::vector<std::string>& args);
 fs::path ruta_ejecutable_actual(const char* argv0);

@@ -1,6 +1,15 @@
-# Automejora (diseño de la fase 4)
+# Automejora
 
-> Esta parte **todavía no está implementada**: es el diseño acordado. La fase 1 ya deja preparadas las piezas (guardián, git, memoria, medidas).
+> **Estado (versión 0.2):** ya funciona la mecánica: puede leer y editar su código, compilarse en `build-auto/`, reiniciarse, y el guardián aplica la versión nueva o vuelve atrás. **Falta** lo que hace que la automejora sea *fiable*: un banco de pruebas que mida si un cambio la mejora, el examen de referencia externo y el registro `/mejoras` (fase 4). Hoy la decisión de cambiarse es del modelo, a veces porque se lo pides tú.
+
+## Cómo se modifica hoy
+
+1. Lee su código (`leer_archivo`) y decide un cambio, por iniciativa propia o porque se lo pides ("mejora cómo escribes tu diario y aplícalo").
+2. Lo escribe (`escribir_archivo`) y lo registra con git (`ejecutar_comando`: `git add` / `git commit`).
+3. `compilar_nueva_version`: compila en `build-auto/` sin pararse y prueba que la versión nueva arranca (`--version`). Si no compila, recibe los errores para corregirlos.
+4. `reiniciarme`: al terminar el turno sale con el código 75. El guardián coloca la versión nueva y la arranca; si se cae en su primer minuto, vuelve a la anterior y ella lo sabrá al arrancar.
+
+Puedes revisar sus cambios con `git log`, `git diff`, y deshacerlos con `git checkout` o `git revert`.
 
 ## Principio: acceso total, con memoria de lo que hace y vuelta atrás
 

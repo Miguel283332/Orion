@@ -29,6 +29,15 @@ struct Recuerdo {
     std::string origen;  // reflexion | manual | ...
 };
 
+struct Meta {
+    std::string id;      // "m3"
+    double creada = 0;
+    std::string tema, motivo;
+    std::string estado = "pendiente";   // pendiente | hecha | fallida
+    std::string resultado;
+    int intentos = 0;
+};
+
 struct Encontrado {
     double puntuacion = 0;
     std::string id;      // id del recuerdo o "t<n>" para un turno de conversación
@@ -63,6 +72,13 @@ public:
     std::string yo() const;
     void escribir_yo(const std::string& texto);   // guarda la versión anterior en yo_versiones/
 
+    // metas de aprendizaje ("voy a aprender")
+    std::string crear_meta(const std::string& tema, const std::string& motivo);
+    std::vector<Meta> metas() const;
+    bool proxima_meta(Meta& m) const;   // la pendiente más antigua
+    void cerrar_meta(const std::string& id, const std::string& estado, const std::string& resultado);
+    void contar_intento_meta(const std::string& id);
+
     // estadísticas acumuladas (persisten entre arranques)
     json estadisticas() const;
     void sumar(const std::string& clave, double valor);
@@ -71,6 +87,8 @@ public:
 private:
     void guardar_recuerdos();
     void guardar_estadisticas();
+    void guardar_metas();
+    std::vector<Meta> metas_;
     fs::path dir_;
     mutable std::mutex mu_;
     std::vector<Turno> turnos_;

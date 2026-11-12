@@ -18,7 +18,8 @@ Una persona no funciona "mensaje → respuesta": recibe estímulos sin parar y p
   │ 1. ¿hay mensajes? → responder│◄──── un único modelo (Ollama, streaming, cancelable)
   │ 2. si no, según el ritmo:    │
   │    · reflexionar             │────► datos/  (todo se guarda al momento)
-  │    · escribir el diario      │
+  │    · trabajar en una meta    │◄───► herramientas: comandos, archivos, internet,
+  │    · escribir el diario      │      memoria, compilarse, reiniciarse
   │    · revisar yo.md           │
   │    · o descansar             │
   └──────────────────────────────┘
@@ -27,6 +28,34 @@ Una persona no funciona "mensaje → respuesta": recibe estímulos sin parar y p
 - **Tu mensaje interrumpe**: el hilo de terminal pone el mensaje en la cola y activa la señal de cancelación. La generación en curso se corta al instante (Orion cierra la conexión con Ollama y Ollama deja de generar). La tarea interrumpida no deja nada a medias y se reintenta más tarde.
 - **Ritmo** (`/ritmo`): cada cuánto piensa a solas si no le hablas. *bajo* 15 min, *medio* 2 min, *alto* 20 s. Si no hay nada nuevo que pensar, **descansa** y no gasta CPU. Si falla (por ejemplo, Ollama caído), espera cada vez más entre intentos.
 - **Gracia**: tras hablar contigo espera 20 s antes de ponerse a pensar a solas, para no quitarte el modelo si sigues escribiendo.
+
+## Herramientas (acceso total)
+
+Al responder, y al trabajar en una meta, el modelo puede pedir **herramientas** con el formato nativo de Ollama (`tools` / `tool_calls`). Orion las ejecuta, devuelve el resultado al modelo como mensaje `tool` y repite hasta que el modelo responde sin pedir más, con un máximo de `max_pasos`. Detalles:
+- Si el modelo escribe la llamada como texto (`<tool_call>{...}</tool_call>`, algo habitual en modelos pequeños), también se entiende.
+- Si el modelo no admite herramientas, responde sin ellas.
+- Cada uso se muestra en la terminal y se anota en `datos/acciones.jsonl`.
+
+Lista y permisos en [ACCESO_TOTAL.md](ACCESO_TOTAL.md).
+
+## "Mi cuerpo"
+
+En cada conversación el contexto incluye una sección que le describe su propio cuerpo:
+- dónde está su **código fuente** y qué hace cada archivo, y cómo modificarse (editar, `compilar_nueva_version`, `reiniciarme`, `git commit`);
+- su **memoria**;
+- sus **pesos**: la ruta del archivo GGUF que usa Ollama (sacada de `/api/show`), su tamaño, sus parámetros y su cuantización;
+- su **hardware** y sus **permisos**.
+
+El código se localiza así: la carpeta actual, si es el repositorio; si no, se busca hacia arriba desde el ejecutable (`build\Release\` → repositorio); o con `--repo`.
+
+## Metas: "no lo sé, voy a aprender"
+
+Si le pides algo que no sabe hacer, se le indica que lo diga y que cree una meta (`crear_meta_de_aprendizaje`). También puedes crearla tú con `/aprende`. Cuando no le hablas, trabaja en la meta más antigua:
+1. usa sus herramientas (busca y lee en internet; comprueba con código o comandos si se puede);
+2. guarda lo importante como recuerdos;
+3. termina con un resumen.
+
+El resumen queda en la meta (`/metas`), en un recuerdo de tipo `aprendido` y en la conversación. Te avisa con `★ He terminado de aprender sobre…`. Si no termina en 3 intentos, la meta se marca como fallida. Tu mensaje interrumpe el trabajo, que se retoma después.
 
 ## Un solo modelo
 
@@ -41,6 +70,9 @@ Archivos de texto legibles, que Orion podrá leer y modificar ella misma:
 | Archivo | Tipo de memoria | Contenido |
 |---|---|---|
 | `conversacion.jsonl` | episódica | cada turno, con fecha |
+| `metas.json` | metas | lo que quiere aprender, su estado y lo aprendido |
+| `acciones.jsonl` | registro | cada uso de una herramienta (fecha, origen, argumentos, resultado) |
+| `actualizacion/` | automejora | la versión nueva compilada, esperando a que el guardián la aplique |
 | `recuerdos.jsonl` | semántica | hechos duraderos (`usuario`, `proyecto`, `preferencia`, `yo`, `mundo`, `manual`) con id `rN` |
 | `diario.md` | autobiográfica | entradas en primera persona |
 | `yo.md` | modelo de sí misma | quién es, qué sabe hacer, sus límites (con su hardware medido), qué quiere aprender, cambios |
@@ -68,7 +100,10 @@ Archivos de texto legibles, que Orion podrá leer y modificar ella misma:
 - si sale con **75** (`/reinicia`), la vuelve a arrancar;
 - si **se cae**, la vuelve a arrancar a los 3 s; si se cae 3 veces en 2 minutos, se detiene y lo anota en `datos/guardian.log`.
 
-En la fase 4 el guardián también aplicará las versiones nuevas de Orion que ella misma compile, y volverá a la última que funcionaba si la nueva no arranca.
+Además aplica las **versiones nuevas** que Orion compila de sí misma:
+1. si encuentra `datos/actualizacion/orion.exe`, guarda la actual como `orion.anterior.exe` y pone la nueva en su lugar;
+2. si la nueva se cae en su primer minuto, **vuelve a la anterior**;
+3. Orion lo dice al arrancar y lo añade a su conversación, para saber que su cambio falló.
 
 ## Código
 
@@ -79,5 +114,6 @@ En la fase 4 el guardián también aplicará las versiones nuevas de Orion que e
 | `ollama` | chat en streaming, `/api/show` (parámetros, cuantización, contexto) y `/api/ps` (RAM/VRAM) |
 | `memoria` | los archivos de `datos/`, BM25, diario, `yo.md` y estadísticas |
 | `sistema` | hardware (CPU, RAM, disco, memoria del proceso) y ejecución de procesos (git, guardián) |
-| `mente` | contexto y prompts; responder, reflexionar, diario, `yo.md` |
+| `herramientas` | comandos, archivos, internet (curl), memoria, metas, compilarse y reiniciarse; registro de acciones |
+| `mente` | contexto ("Mi cuerpo", recuerdos, estado); bucle de herramientas; responder, metas, reflexionar, diario, `yo.md` |
 | `nucleo` | bucle de vida, hilos, interrupción, comandos |

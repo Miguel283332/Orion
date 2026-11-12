@@ -13,7 +13,7 @@ endif()
 find_package(Threads REQUIRED)
 
 add_library(orion_core STATIC
-  src/util.cpp src/http.cpp src/ollama.cpp src/memoria.cpp src/sistema.cpp src/mente.cpp src/nucleo.cpp)
+  src/util.cpp src/http.cpp src/ollama.cpp src/memoria.cpp src/sistema.cpp src/mente.cpp src/nucleo.cpp src/herramientas.cpp)
 target_include_directories(orion_core PUBLIC include third_party)
 target_link_libraries(orion_core PUBLIC Threads::Threads)
 if(WIN32)

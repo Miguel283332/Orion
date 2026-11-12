@@ -25,6 +25,7 @@ struct OpcionesNucleo {
     bool autonomo = true;              // pensar a solas cuando no le hablan
     bool color = true;
     double gracia_s = 20;              // segundos de silencio antes de ponerse a pensar a solas
+    std::function<void(int)> terminar; // cómo terminar el proceso (reinicio pedido por ella); vacío = salir del bucle
 };
 
 class Nucleo {
@@ -51,6 +52,10 @@ private:
     void atender(const std::string& mensaje);
     bool tarea_a_solas(bool forzar_reflexion);
     std::string hechos_medidos();
+    std::string describir_cuerpo();
+    Herramientas herramientas(const std::string& origen);
+    bool trabajar_en_metas();
+    void quizas_reiniciar();
     std::string linea_estado_para_modelo();
     void decir(const std::string& texto);            // línea completa
     void nota(const std::string& texto);             // nota tenue de actividad
@@ -65,10 +70,11 @@ private:
     Ollama llm_;
     Mente mente_;
     std::mutex mu_salida_, mu_;
+    bool linea_abierta_ = false, prefijo_pendiente_ = false;   // estado de la línea "Orion> ..." (protegido por mu_salida_)
     std::condition_variable cv_;
     std::deque<std::string> cola_;
     std::atomic<bool> salir_{false}, pausado_{false}, cancelar_fondo_{false}, cancelar_chat_{false}, ocupado_{false};
-    std::atomic<bool> reflexion_pedida_{false};
+    std::atomic<bool> reflexion_pedida_{false}, reinicio_pedido_{false}, parado_{false};
     std::atomic<int> ritmo_{1};
     std::string modelo_pendiente_;
     InfoModelo modelo_cache_;

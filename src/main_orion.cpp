@@ -45,12 +45,15 @@ int main(int argc, char** argv) {
         else if (a == "--sin-autonomia") op.autonomo = false;
         else if (a == "--sin-color") op.color = false;
         else if (a == "--gracia") op.gracia_s = std::atof(valor().c_str());
-        else if (a == "--version") { std::puts("orion 0.1 (fase 1)"); return 0; }
+        else if (a == "--version") { std::puts("orion 0.2 (herramientas, metas y automejora)"); return 0; }
         else if (a == "-h" || a == "--help" || a == "--ayuda") { uso(); return 0; }
         else { std::fprintf(stderr, "opción desconocida: %s\n", a.c_str()); uso(); return 2; }
     }
     if (!ES_TERMINAL()) op.color = false;
-    if (op.repo.empty() && fs::exists(".git")) op.repo = fs::current_path();
+    if (op.repo.empty() && fs::exists(".git") && fs::exists("CMakeLists.txt")) op.repo = fs::current_path();
+    if (op.repo.empty())   // el ejecutable suele estar en <repo>/build/Release: buscar hacia arriba
+        for (fs::path p = ruta_ejecutable_actual(argv[0]).parent_path(); !p.empty() && p != p.parent_path(); p = p.parent_path())
+            if (fs::exists(p / "CMakeLists.txt") && fs::exists(p / "src" / "nucleo.cpp")) { op.repo = p; break; }
     fs::create_directories(op.datos);
     Config cfg = Config::cargar(op.datos / "config.json");
     if (!modelo.empty()) cfg.modelo = modelo;
@@ -60,6 +63,7 @@ int main(int argc, char** argv) {
     // Ctrl+C: todo se guarda en el momento en que ocurre, así que se puede salir sin más.
     std::signal(SIGINT, [](int) { std::fputs("\nHasta luego.\n", stdout); std::fflush(stdout); std::_Exit(0); });
 
+    op.terminar = [](int codigo) { std::fflush(stdout); std::_Exit(codigo); };   // reinicio pedido por ella misma
     Nucleo n(cfg, op, [](const std::string& t) { std::fwrite(t.data(), 1, t.size(), stdout); std::fflush(stdout); });
     n.arrancar();
     return n.ejecutar([](std::string& l) { return leer_linea(l); });

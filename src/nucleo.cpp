@@ -27,6 +27,10 @@ const char* AYUDA = R"(Habla escribiendo sin barra. Comandos:
   /buscar <texto>       buscar en recuerdos y conversaciones
   /diario [n]           últimas n entradas de su diario
   /yo                   cómo se ve a sí misma (yo.md)
+  /metas                lo que está aprendiendo (metas "voy a aprender")
+  /aprende <tema>       ponerle una meta de aprendizaje
+  /acciones [n]         últimas acciones con sus herramientas (comandos, archivos, internet)
+  /permisos [total|lectura|ninguno]  qué herramientas puede usar (por defecto: total)
   /reflexiona           que reflexione ahora sobre la conversación
   /pausa · /sigue       detener o reanudar su pensamiento a solas
   /ritmo [bajo|medio|alto]  cada cuánto piensa a solas
@@ -46,11 +50,13 @@ Nucleo::~Nucleo() { parar(); }
 
 void Nucleo::decir(const std::string& t) {
     std::lock_guard<std::mutex> l(mu_salida_);
+    if (linea_abierta_) { salida_("\n"); linea_abierta_ = false; prefijo_pendiente_ = true; }
     salida_(t + "\n");
 }
 
 void Nucleo::nota(const std::string& t) {
     std::lock_guard<std::mutex> l(mu_salida_);
+    if (linea_abierta_) { salida_("\n"); linea_abierta_ = false; prefijo_pendiente_ = true; }
     salida_(op_.color ? std::string(TENUE) + "  · " + t + NORMAL + "\n" : "  · " + t + "\n");
 }
 
@@ -91,6 +97,15 @@ void Nucleo::arrancar() {
             decir("Modelo " + cfg_.modelo + " (" + (info.parametros > 0 ? formato_numero(info.parametros) + " de parámetros" : info.tamano_parametros) +
                   (info.cuantizacion.empty() ? "" : ", " + info.cuantizacion) + ") · Ollama " + version);
     }
+    std::error_code ec;
+    if (fs::exists(op_.datos / "actualizacion_fallida.txt", ec)) {
+        std::string aviso = trim(leer_archivo(op_.datos / "actualizacion_fallida.txt"));
+        decir("⚠ La última versión que compilé de mí misma falló al arrancar; el guardián volvió a la anterior.");
+        mem_.anadir_turno("orion", "[Aviso del guardián] La versión nueva que compilé falló al arrancar y se volvió a la anterior: " + aviso);
+        fs::remove(op_.datos / "actualizacion_fallida.txt", ec);
+    }
+    mente_.fijar_cuerpo(describir_cuerpo());
+    decir("Permisos: " + cfg_.permisos + (cfg_.permisos == "total" ? " (comandos, archivos, internet, su código y su memoria; todo queda en datos/acciones.jsonl)" : ""));
     decir("Escribe para hablar conmigo. /ayuda para ver los comandos.");
     hilo_ = std::thread([this] { bucle_mente(); });
 }
@@ -144,10 +159,11 @@ void Nucleo::esperar_inactividad(double max_s) {
 }
 
 void Nucleo::parar() {
-    if (salir_.exchange(true)) return;
+    if (parado_.exchange(true)) return;
+    salir_ = true;
     cancelar_fondo_ = true;
     cv_.notify_all();
-    if (hilo_.joinable()) hilo_.join();
+    if (hilo_.joinable() && hilo_.get_id() != std::this_thread::get_id()) hilo_.join();
     if (inicio_ > 0) mem_.sumar("segundos_encendida", ahora_s() - inicio_);
 }
 
@@ -169,6 +185,7 @@ void Nucleo::bucle_mente() {
                 cfg_.modelo = modelo_pendiente_;
                 llm_.cambiar_modelo(modelo_pendiente_);
                 modelo_pendiente_.clear();
+                mente_.modelo_cambiado();
                 modelo_cache_t_ = 0;
             }
         }
@@ -204,15 +221,27 @@ void Nucleo::atender(const std::string& mensaje) {
     mente_.fijar_estado_actual(linea_estado_para_modelo());
     {
         std::lock_guard<std::mutex> l(mu_salida_);
-        salida_(op_.color ? std::string(CIAN) + "Orion> " + NORMAL : "Orion> ");
+        prefijo_pendiente_ = true;
     }
+    auto h = herramientas("chat");
     auto r = mente_.responder(mensaje, [&](const std::string& t) {
         std::lock_guard<std::mutex> l(mu_salida_);
+        if (prefijo_pendiente_) {
+            std::string limpio = t;
+            while (!limpio.empty() && (limpio[0] == '\n' || limpio[0] == ' ')) limpio.erase(0, 1);
+            if (limpio.empty()) return;
+            salida_(op_.color ? std::string(CIAN) + "Orion> " + NORMAL : "Orion> ");
+            prefijo_pendiente_ = false;
+            linea_abierta_ = true;
+            salida_(limpio);
+            return;
+        }
         salida_(t);
-    }, &cancelar_chat_);
+    }, &cancelar_chat_, &h);
     {
         std::lock_guard<std::mutex> l(mu_salida_);
-        salida_("\n");
+        if (linea_abierta_) salida_("\n");
+        linea_abierta_ = prefijo_pendiente_ = false;
     }
     if (!r.error.empty()) decir("⚠ " + r.error);
     else if (r.cancelada) nota("respuesta interrumpida");
@@ -222,6 +251,66 @@ void Nucleo::atender(const std::string& mensaje) {
         nota(buf);
     }
     fijar_actividad(pausado_ ? "en pausa" : "en reposo");
+    quizas_reiniciar();
+}
+
+void Nucleo::quizas_reiniciar() {
+    if (!reinicio_pedido_) return;
+    decir("Me reinicio (si hay una versión nueva compilada, el guardián la aplica)…");
+    if (op_.terminar) {
+        mem_.sumar("segundos_encendida", ahora_s() - inicio_);
+        inicio_ = 0;
+        op_.terminar(CODIGO_REINICIO);
+        return;
+    }
+    codigo_salida_ = CODIGO_REINICIO;
+    salir_ = true;
+}
+
+Herramientas Nucleo::herramientas(const std::string& origen) {
+    ContextoHerramientas c;
+    c.datos = op_.datos;
+    c.repo = op_.repo;
+    c.memoria = &mem_;
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        c.permisos = cfg_.permisos;
+    }
+    c.origen = origen;
+    c.aviso = [this](const std::string& t) { nota(t); };
+    c.reinicio_pedido = &reinicio_pedido_;
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        c.cmake = cfg_.cmake;
+    }
+    return Herramientas(c);
+}
+
+bool Nucleo::trabajar_en_metas() {
+    Meta m;
+    if (!mem_.proxima_meta(m)) return false;
+    if (m.intentos >= 3) {
+        mem_.cerrar_meta(m.id, "fallida", "Lo intenté 3 veces sin terminar.");
+        nota("abandono la meta «" + m.tema + "» tras 3 intentos");
+        return true;
+    }
+    mem_.contar_intento_meta(m.id);
+    std::string que = "aprendiendo: " + m.tema;
+    fijar_actividad(que);
+    nota(que + "…");
+    mente_.fijar_estado_actual(linea_estado_para_modelo());
+    auto h = herramientas("meta " + m.id);
+    std::string res = mente_.trabajar_en_meta(m, &h, &cancelar_fondo_);
+    if (cancelar_fondo_ || res.empty()) {
+        nota("lo dejo para luego: te atiendo");
+        return true;
+    }
+    mem_.cerrar_meta(m.id, "hecha", res);
+    mem_.recordar("aprendido", "Sobre «" + m.tema + "»: " + recortar(res, 500), "meta");
+    mem_.anadir_turno("orion", "[He terminado de aprender sobre «" + m.tema + "»] " + res);
+    decir((op_.color ? std::string(CIAN) + "★ " + NORMAL : "★ ") + "He terminado de aprender sobre «" + m.tema + "»:\n" + res);
+    quizas_reiniciar();
+    return true;
 }
 
 bool Nucleo::tarea_a_solas(bool forzar_reflexion) {
@@ -232,6 +321,8 @@ bool Nucleo::tarea_a_solas(bool forzar_reflexion) {
         fijar_actividad(que);
         nota(que + "…");
         res = mente_.reflexionar(&cancelar_fondo_);
+    } else if (cfg_.permisos != "ninguno" && trabajar_en_metas()) {
+        return true;
     } else if (mente_.hay_que_escribir_diario()) {
         que = "escribiendo mi diario";
         fijar_actividad(que);
@@ -271,6 +362,30 @@ std::string Nucleo::linea_estado_para_modelo() {
                   m.parametros > 0 ? (" (" + formato_numero(m.parametros) + " de parámetros)").c_str() : "", me.tokens_por_segundo,
                   mem_.recuerdos().size());
     return buf;
+}
+
+std::string Nucleo::describir_cuerpo() {
+    InfoModelo m = info_modelo(false);
+    Hardware h = medir_hardware(op_.datos);
+    std::string s;
+    if (!op_.repo.empty() && fs::exists(op_.repo / "CMakeLists.txt"))
+        s += "- Mi código fuente (C++20) está en " + fs::absolute(op_.repo).string() +
+             ": src/nucleo.cpp (bucle de vida y comandos), src/mente.cpp (prompts y razonamiento), src/herramientas.cpp (mis herramientas), "
+             "src/memoria.cpp, src/ollama.cpp (acceso al modelo), src/http.cpp, src/sistema.cpp, src/main_orion.cpp, src/main_guardian.cpp, "
+             "include/orion/*.hpp, docs/. Puedo leerlo y modificarlo. Para cambiarme: edito el código, uso compilar_nueva_version y después "
+             "reiniciarme (el guardián aplica la versión nueva y vuelve a la anterior si falla). Registro cada cambio con git (git add/commit con ejecutar_comando).\n";
+    else
+        s += "- No sé dónde está mi código fuente (arráncame desde la carpeta del repositorio o con --repo).\n";
+    s += "- Mi memoria está en " + fs::absolute(op_.datos).string() +
+         ": conversacion.jsonl, recuerdos.jsonl, diario.md, yo.md, metas.json, acciones.jsonl (todo lo que hago con herramientas), config.json. "
+         "Puedo leerla y modificarla.\n";
+    s += "- Mis pesos: modelo " + cfg_.modelo + (m.parametros > 0 ? " (" + formato_numero(m.parametros) + " de parámetros" + (m.cuantizacion.empty() ? "" : ", " + m.cuantizacion) + ")" : "") +
+         (m.ruta_pesos.empty() ? ", gestionado por Ollama (en Windows suele estar en %USERPROFILE%\\.ollama\\models)"
+                               : ", archivo GGUF " + m.ruta_pesos + " (" + formato_bytes(m.bytes_pesos) + ")") +
+         ". Puedo leerlos y copiarlos; cambiarlos de verdad requiere entrenarlos (fase 5, con GPU). Con `ollama create` puedo crear variantes del modelo.\n";
+    s += "- Mi hardware: " + h.so + ", " + h.cpu + " (" + std::to_string(h.hilos) + " hilos), RAM " + formato_bytes(h.ram_total) + ".\n";
+    s += "- Mis permisos: " + cfg_.permisos + ". Cada acción que hago con herramientas se muestra a mi creador y queda registrada.";
+    return s;
 }
 
 std::string Nucleo::hechos_medidos() {
@@ -405,6 +520,52 @@ std::string Nucleo::comando(const std::string& linea) {
     }
 
     if (cmd == "/yo") return trim(mem_.yo());
+
+    if (cmd == "/metas") {
+        auto ms = mem_.metas();
+        if (ms.empty()) return "No tengo metas. Se crean cuando no sé algo y digo \"voy a aprender\", o con /aprende <tema>.";
+        std::string s;
+        for (auto& m : ms)
+            s += "[" + m.id + "] " + m.estado + (m.intentos ? " (" + std::to_string(m.intentos) + " intentos)" : "") + " — " + m.tema +
+                 (m.resultado.empty() ? "" : "\n      " + recortar(m.resultado, 300)) + "\n";
+        return trim(s);
+    }
+
+    if (cmd == "/aprende") {
+        if (arg.empty()) return "Uso: /aprende <tema>";
+        std::string id = mem_.crear_meta(arg, "me lo pidió mi creador con /aprende");
+        reflexion_pedida_ = false;
+        return "Meta " + id + " creada. Trabajaré en ella a solas cuando no me hables (" + std::string(ritmo_nombre(ritmo_)) + " ritmo) y te avisaré al terminar.";
+    }
+
+    if (cmd == "/acciones") {
+        size_t n = arg.empty() ? 10 : static_cast<size_t>(std::max(1, std::atoi(arg.c_str())));
+        auto lineas = split_lines(leer_archivo(op_.datos / "acciones.jsonl"));
+        if (lineas.empty()) return "Todavía no he usado ninguna herramienta.";
+        std::string s;
+        for (size_t i = lineas.size() > n ? lineas.size() - n : 0; i < lineas.size(); ++i) {
+            json j = json::parse(lineas[i], nullptr, false);
+            if (!j.is_object()) continue;
+            s += j.value("fecha", std::string()) + " [" + j.value("origen", std::string()) + "] " + j.value("herramienta", std::string()) + " " +
+                 recortar(j.contains("argumentos") ? j["argumentos"].dump() : "", 160) + "\n      → " +
+                 recortar(split_lines(j.value("resultado", std::string())).empty() ? "" : split_lines(j.value("resultado", std::string()))[0], 160) + "\n";
+        }
+        return trim(s);
+    }
+
+    if (cmd == "/permisos") {
+        if (arg.empty())
+            return "Permisos: " + cfg_.permisos + ". Opciones: total (comandos, archivos, internet, compilarse), lectura (leer archivos e internet), "
+                   "ninguno (solo su memoria).";
+        if (arg != "total" && arg != "lectura" && arg != "ninguno") return "Opciones: total, lectura, ninguno.";
+        {
+            std::lock_guard<std::mutex> l(mu_);
+            cfg_.permisos = arg;
+            cfg_.guardar(op_.datos / "config.json");
+        }
+        mente_.fijar_cuerpo(describir_cuerpo());
+        return "Permisos: " + arg + ".";
+    }
 
     if (cmd == "/reflexiona") {
         reflexion_pedida_ = true;

@@ -100,10 +100,12 @@ Hardware medir_hardware(const fs::path& dir_datos) {
     return h;
 }
 
-ResultadoProceso ejecutar_proceso(const std::vector<std::string>& args, const fs::path& dir, int timeout_s, const std::string& entrada) {
-    ResultadoProceso r;
-    if (args.empty()) return r;
+static const size_t MAX_SALIDA = 1 << 20;   // 1 MB: suficiente y evita llenar la memoria con salidas infinitas
+
 #ifdef _WIN32
+// Ejecuta una línea de comandos ya construida. Usa un "job" para poder matar también a los procesos hijos.
+static ResultadoProceso ejecutar_win(std::wstring cmd, const fs::path& dir, int timeout_s, const std::string& entrada, const std::string& nombre) {
+    ResultadoProceso r;
     SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
     HANDLE lectura = nullptr, escritura = nullptr;
     if (!CreatePipe(&lectura, &escritura, &sa, 0)) return r;
@@ -111,17 +113,26 @@ ResultadoProceso ejecutar_proceso(const std::vector<std::string>& args, const fs
     HANDLE in_lect = nullptr, in_escr = nullptr;
     if (!CreatePipe(&in_lect, &in_escr, &sa, 0)) { CloseHandle(lectura); CloseHandle(escritura); return r; }
     SetHandleInformation(in_escr, HANDLE_FLAG_INHERIT, 0);
-    HANDLE nul = in_lect;
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdOutput = escritura;
     si.hStdError = escritura;
-    si.hStdInput = nul;
+    si.hStdInput = in_lect;
     PROCESS_INFORMATION pi{};
-    std::wstring cmd = linea_de_comandos(args);
     std::wstring wdir = dir.empty() ? L"" : dir.wstring();
-    BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, wdir.empty() ? nullptr : wdir.c_str(), &si, &pi);
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    if (job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION li{};
+        li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof(li));
+    }
+    BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr,
+                             wdir.empty() ? nullptr : wdir.c_str(), &si, &pi);
+    if (ok) {
+        if (job) AssignProcessToJobObject(job, pi.hProcess);
+        ResumeThread(pi.hThread);
+    }
     CloseHandle(escritura);
     CloseHandle(in_lect);
     if (ok && !entrada.empty()) {
@@ -131,35 +142,44 @@ ResultadoProceso ejecutar_proceso(const std::vector<std::string>& args, const fs
     CloseHandle(in_escr);
     if (!ok) {
         CloseHandle(lectura);
-        r.salida = "no se pudo ejecutar " + args[0];
+        if (job) CloseHandle(job);
+        r.salida = "no se pudo ejecutar " + nombre;
         return r;
     }
     std::string salida;
     std::thread lector([&] {
         char buf[4096];
         DWORD n = 0;
-        while (ReadFile(lectura, buf, sizeof(buf), &n, nullptr) && n > 0) salida.append(buf, n);
+        while (ReadFile(lectura, buf, sizeof(buf), &n, nullptr) && n > 0)
+            if (salida.size() < MAX_SALIDA) salida.append(buf, n);
     });
     if (WaitForSingleObject(pi.hProcess, static_cast<DWORD>(timeout_s) * 1000) == WAIT_TIMEOUT) {
-        TerminateProcess(pi.hProcess, 1);
         r.tiempo_agotado = true;
+        if (job) TerminateJobObject(job, 1);
+        else TerminateProcess(pi.hProcess, 1);
         WaitForSingleObject(pi.hProcess, 5000);
     }
-    lector.join();
     DWORD codigo = 1;
     GetExitCodeProcess(pi.hProcess, &codigo);
+    if (job) CloseHandle(job);   // mata a los hijos que queden y libera la tubería
+    lector.join();
     r.codigo = static_cast<int>(codigo);
     r.salida = salida;
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     CloseHandle(lectura);
+    return r;
+}
 #else
+static ResultadoProceso ejecutar_posix(const std::vector<std::string>& args, const fs::path& dir, int timeout_s, const std::string& entrada) {
+    ResultadoProceso r;
     int tubo[2], ent[2];
     if (pipe(tubo) != 0) return r;
     if (pipe(ent) != 0) { close(tubo[0]); close(tubo[1]); return r; }
     pid_t pid = fork();
     if (pid < 0) { close(tubo[0]); close(tubo[1]); close(ent[0]); close(ent[1]); return r; }
     if (pid == 0) {
+        setpgid(0, 0);   // grupo propio: así se puede matar también a sus hijos
         dup2(ent[0], 0);
         close(ent[0]);
         close(ent[1]);
@@ -185,28 +205,49 @@ ResultadoProceso ejecutar_proceso(const std::vector<std::string>& args, const fs
     close(ent[1]);
     auto limite = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_s);
     char buf[4096];
+    int st = 0;
+    bool terminado = false;
     for (;;) {
         pollfd p{tubo[0], POLLIN, 0};
-        int n = poll(&p, 1, 200);
+        int n = poll(&p, 1, 100);
         if (n > 0) {
             ssize_t leidos = read(tubo[0], buf, sizeof(buf));
             if (leidos <= 0) break;
-            r.salida.append(buf, static_cast<size_t>(leidos));
-        } else if (n < 0 && errno != EINTR) {
-            break;
+            if (r.salida.size() < MAX_SALIDA) r.salida.append(buf, static_cast<size_t>(leidos));
+            continue;
         }
+        if (n < 0 && errno != EINTR) break;
+        if (!terminado && waitpid(pid, &st, WNOHANG) == pid) terminado = true;
+        if (terminado) break;   // ya terminó y no queda nada que leer (aunque un nieto mantenga la tubería abierta)
         if (std::chrono::steady_clock::now() > limite) {
-            kill(pid, SIGKILL);
+            kill(-pid, SIGKILL);
             r.tiempo_agotado = true;
             break;
         }
     }
     close(tubo[0]);
-    int st = 0;
-    waitpid(pid, &st, 0);
+    if (!terminado) waitpid(pid, &st, 0);
     r.codigo = WIFEXITED(st) ? WEXITSTATUS(st) : 128 + (WIFSIGNALED(st) ? WTERMSIG(st) : 0);
-#endif
     return r;
+}
+#endif
+
+ResultadoProceso ejecutar_proceso(const std::vector<std::string>& args, const fs::path& dir, int timeout_s, const std::string& entrada) {
+    if (args.empty()) return {};
+#ifdef _WIN32
+    return ejecutar_win(linea_de_comandos(args), dir, timeout_s, entrada, args[0]);
+#else
+    return ejecutar_posix(args, dir, timeout_s, entrada);
+#endif
+}
+
+ResultadoProceso ejecutar_shell(const std::string& comando, const fs::path& dir, int timeout_s) {
+#ifdef _WIN32
+    // chcp 65001: salida en UTF-8 (si no, las tildes salen mal). /s: cmd quita solo las comillas exteriores.
+    return ejecutar_win(L"cmd.exe /d /s /c \"chcp 65001 >nul & " + a_utf16(comando) + L"\"", dir, timeout_s, "", "cmd.exe");
+#else
+    return ejecutar_posix({"/bin/sh", "-c", comando}, dir, timeout_s, "");
+#endif
 }
 
 int ejecutar_en_consola(const std::vector<std::string>& args) {

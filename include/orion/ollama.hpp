@@ -23,6 +23,7 @@ struct ResultadoGeneracion {
     bool ok = false;
     bool cancelada = false;
     std::string error;
+    json llamadas = json::array();   // herramientas que el modelo pide usar: [{"function":{"name":..,"arguments":{..}}}]
     long long tokens_prompt = 0, tokens_generados = 0;
     double segundos_prompt = 0, segundos_generacion = 0;
     double tokens_por_segundo() const { return segundos_generacion > 0 ? tokens_generados / segundos_generacion : 0; }
@@ -32,6 +33,9 @@ struct InfoModelo {
     bool ok = false;
     std::string error;
     std::string nombre, familia, cuantizacion, tamano_parametros;   // tamano_parametros: "3.1B" según Ollama
+    std::string ruta_pesos;                                           // archivo GGUF con los pesos (línea FROM del Modelfile)
+    double bytes_pesos = 0;
+    bool admite_herramientas = false;
     double parametros = 0;                                            // exacto si Ollama lo da (general.parameter_count)
     long long contexto_max = 0;
     double bytes_en_memoria = 0, bytes_en_vram = 0;                  // de /api/ps (0 si no está cargado)
@@ -45,8 +49,9 @@ public:
     void cambiar_modelo(const std::string& m) { modelo_ = m; }
     bool disponible(std::string* version = nullptr) const;
     // mensajes: [{"role":"system|user|assistant","content":"..."}]. por_trozo recibe el texto según llega.
+    // herramientas: lista en el formato de Ollama (o nullptr). Si el modelo pide usarlas, vienen en ResultadoGeneracion::llamadas.
     ResultadoGeneracion chat(const json& mensajes, const OpcionesGeneracion& op, const std::function<void(const std::string&)>& por_trozo,
-                             const std::atomic<bool>* cancelar) const;
+                             const std::atomic<bool>* cancelar, const json* herramientas = nullptr) const;
     InfoModelo info() const;
 private:
     ClienteHttp http_;
