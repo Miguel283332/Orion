@@ -775,6 +775,23 @@ static void t_web() {
     ClienteHttp ajeno = con;
     ajeno.cabecera("Host", "atacante.example");
     CHECK(ajeno.get("/api/estado").estado == 403, "rechaza otro Host (protección contra DNS rebinding)");
+    {
+        OpcionesNucleo op2 = op;
+        op2.web_cualquier_host = true;
+        op2.datos = d.p / "proxy";
+        Config cfg2 = cfg;
+        cfg2.web_puerto = 0;
+        Nucleo proxy(cfg2, op2, [](const std::string&) {});
+        PeticionHttp p;
+        p.metodo = "GET";
+        p.ruta = "/api/estado";
+        p.cabeceras["host"] = "xyz-7860-colab.googleusercontent.com";
+        p.cabeceras["x-orion-token"] = "malo";
+        CHECK(proxy.atender_web(p).estado == 403, "con --web-cualquier-host el token sigue siendo obligatorio");
+        p.cabeceras.erase("x-orion-token");
+        p.ruta = "/";
+        CHECK(proxy.atender_web(p).estado == 200, "con --web-cualquier-host acepta el Host del proxy");
+    }
     con.post("/api/mensaje", R"({"texto": "hola desde la web"})");
     n.esperar_inactividad(10);
     auto ev = json::parse(con.get("/api/eventos?desde=0").cuerpo);

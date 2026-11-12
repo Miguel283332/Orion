@@ -14,6 +14,7 @@ Lo que hace:
 - **Escala**: si registras otro ordenador tuyo con Ollama (la RTX), se pasa sola a él cuando es más rápido y vuelve cuando se apaga. Te avisa cuando el hardware la limita.
 
 > **Para empezar:** [docs/WINDOWS.md](docs/WINDOWS.md) explica paso a paso cómo hacer `git pull`, compilar en VS Code y arrancarla.
+> **En Google Colab** (con GPU): [colab/Orion_Colab.ipynb](colab/Orion_Colab.ipynb) clona, compila en C++ y la ejecuta ([docs/COLAB.md](docs/COLAB.md)).
 
 ## Versión 0.3: qué hay
 
@@ -56,6 +57,7 @@ Comandos ([lista completa](docs/COMANDOS.md)):
 | Documento | Contenido |
 |---|---|
 | [WINDOWS.md](docs/WINDOWS.md) | instalación, `git pull`, compilación en VS Code, arranque, actualización y problemas frecuentes |
+| [COLAB.md](docs/COLAB.md) | el cuaderno de Colab: clonar, compilar en C++ y ejecutar con GPU |
 | [ACCESO_TOTAL.md](docs/ACCESO_TOTAL.md) | qué puede hacer en tu ordenador, qué hace a solas, cómo ver todo y cómo cambiar los permisos |
 | [APRENDER.md](docs/APRENDER.md) | memoria por significado, metas por pasos, habilidades y práctica con juez real |
 | [AUTOMEJORA.md](docs/AUTOMEJORA.md) | el ciclo medido, el banco y el examen, qué puede cambiar y qué no, y sus límites |
@@ -83,7 +85,7 @@ Orion/
 
 ## Estado real (qué está comprobado y qué no)
 
-**Comprobado** con **202 comprobaciones** automáticas y un Ollama simulado:
+**Comprobado** con **204 comprobaciones** automáticas y un Ollama simulado:
 - memoria por significado (encuentra "física" al preguntar por "ciencia") y resúmenes;
 - habilidades que solo se guardan si funcionan; práctica que ejecuta, compara, ajusta la dificultad y saca lecciones;
 - metas por pasos;

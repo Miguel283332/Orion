@@ -31,6 +31,7 @@ struct OpcionesNucleo {
     std::function<void(int)> terminar; // cómo terminar el proceso (reinicio pedido por ella); vacío = salir del bucle
     fs::path prompts;                  // sus instrucciones (prompts/sistema.md); vacío = las de por defecto
     fs::path ejecutable;               // su propio ejecutable (para medirse)
+    bool web_cualquier_host = false;   // aceptar la web a través de un proxy (Colab); el token sigue siendo obligatorio
 };
 
 class Nucleo {
