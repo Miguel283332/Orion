@@ -15,7 +15,7 @@ Después: *Entorno de ejecución → Cambiar tipo → GPU (T4)* y *Ejecutar toda
 | 3. Ollama | instala Ollama, lo arranca en segundo plano y descarga el modelo |
 | 4. Repositorio | `git clone` (o `git pull` si ya estaba) y configura git para que Orion pueda hacer commit de sus mejoras |
 | 5. Memoria | monta Google Drive: `MyDrive/orion_datos` sobrevive a que se cierre Colab |
-| 6. Compilar | `cmake --preset orion`, `cmake --build build` y las pruebas (`orion_tests`) |
+| 6. Compilar | `cmake -S . -B build`, `cmake --build build` y las pruebas (`orion_tests`) |
 | 7. Arrancar | lanza el **guardián** (que lanza Orion) en segundo plano; define `orion("texto")` y `actividad()` |
 | 8. Interfaz web | abre la interfaz de Orion a través del proxy de Colab (con su token) |
 | 9. Hablar | `orion("hola")`, `orion("/modelo")`, `orion("/estado")`… |
