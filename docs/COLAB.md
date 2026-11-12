@@ -20,6 +20,7 @@ Después: *Entorno de ejecución → Cambiar tipo → GPU (T4)* y *Ejecutar toda
 | 8. Interfaz web | abre la interfaz de Orion a través del proxy de Colab (con su token) |
 | 9. Hablar | `orion("hola")`, `orion("/modelo")`, `orion("/estado")`… |
 | 10. Apagar | `orion("/salir")` |
+| 11. Borrar la memoria | apaga Orion y borra toda su memoria (pide `CONFIRMAR = True`; opción para conservar `config.json`) |
 
 ## Diferencias con el PC
 

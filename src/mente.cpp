@@ -533,8 +533,8 @@ std::string Mente::reflexionar(const std::atomic<bool>* cancelar) {
         "(sobre tu creador, sus proyectos, sus preferencias, acuerdos entre vosotros, o sobre ti misma). Solo hechos que aparezcan "
         "en la conversación; nada inventado, nada trivial ni pasajero (saludos, el tiempo que hace...). Cada hecho, una frase autocontenida.\n\n"
         "CONVERSACIÓN:\n" + conversacion_como_texto(turnos, 6000) + "\nYA RECUERDAS (no los repitas):\n" + recortar(conocidos, 2500) +
-        "\nDevuelve SOLO JSON: {\"recuerdos\": [{\"tipo\": \"usuario|proyecto|preferencia|yo|mundo\", \"texto\": \"...\"}]} "
-        "(lista vacía si no hay nada nuevo).";
+        "\nDevuelve SOLO JSON: {\"recuerdos\": [{\"tipo\": \"usuario\", \"texto\": \"...\"}]} donde tipo es UNA de estas palabras: "
+        "usuario, proyecto, preferencia, yo, mundo (lista vacía si no hay nada nuevo).";
     OpcionesGeneracion op;
     op.temperatura = 0.2;
     op.num_ctx = cfg_.num_ctx;

@@ -295,6 +295,9 @@ static void t_memoria() {
     CHECK(contiene(m.yo(), "Otra versión") && fs::exists(d.p / "yo_versiones"), "yo.md con copia de la versión anterior");
     CHECK(m.estadisticas().value("llamadas", 0.0) == 2.0, "estadísticas persistentes");
     CHECK(m.recordar("x", "Otro hecho distinto y nuevo.", "manual") == "r4", "los ids siguen tras recargar");
+    m.recordar("usuario|proyecto|preferencia", "Le interesan los factoriales.", "reflexion");
+    CHECK(m.recuerdos().back().tipo == "usuario" && normalizar_tipo("x") == "mundo" && normalizar_tipo("Preferencia") == "preferencia",
+          "el tipo de recuerdo se normaliza (no se guarda la plantilla «usuario|proyecto|...»)");
 }
 
 static void t_nucleo() {
