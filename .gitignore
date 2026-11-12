@@ -1,8 +1,11 @@
 build*/
-orion_home/
+out/
+datos/
+.vs/
 __pycache__/
 *.pyc
 *.orn
 *.o
 *.part
+orion_home/
 demostrador_runs/

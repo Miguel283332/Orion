@@ -648,13 +648,28 @@ def biblioteca_ejemplos(ruta: str, enunciado: str, backend: str, n: int = 2, max
 PRELUDIO_PY = '''import sympy as sp
 from sympy import *
 
-def verificar(i, cond):
+def verificar(i, criterio):
+    import ast as _ast
+    _g = globals()
+    texto = criterio if isinstance(criterio, str) else ""
+    cond = eval(criterio, _g) if texto else criterio
+    if not (cond is True or cond == sp.true) and texto:
+        # 'a == b' compara la FORMA en SymPy: se acepta si los VALORES coinciden (sp.simplify(a - b) == 0)
+        try:
+            t = _ast.parse(texto, mode="eval").body
+            if isinstance(t, _ast.Compare) and len(t.ops) == 1 and isinstance(t.ops[0], _ast.Eq):
+                a = eval(compile(_ast.Expression(t.left), "<criterio>", "eval"), _g)
+                b = eval(compile(_ast.Expression(t.comparators[0]), "<criterio>", "eval"), _g)
+                if sp.simplify(sp.sympify(a) - sp.sympify(b)) == 0:
+                    cond = True
+        except Exception:
+            pass
     if cond is True or cond == sp.true:
         pass
     elif cond is False or cond == sp.false:
-        raise AssertionError("CRITERIO_FALLA %s: el criterio vale False. Ojo: '==' compara la FORMA, no el valor; compara con simplify(a - b) == 0. Mira los VALORES impresos arriba." % i)
+        raise AssertionError("CRITERIO_FALLA %s: el criterio `%s` es falso con los VALORES calculados (mira VALOR arriba)." % (i, texto))
     else:
-        raise AssertionError("CRITERIO_FALLA %s: el criterio no es booleano (vale %s). Usa una comparacion, p. ej. simplify(a - b) == 0." % (i, cond))
+        raise AssertionError("CRITERIO_FALLA %s: el criterio `%s` no es booleano (vale %s)." % (i, texto, cond))
     print("CRITERIO_OK %s" % i)
 '''
 PY_PROHIBIDO = re.compile(
@@ -722,7 +737,7 @@ class SympyVerificador(Verificador):
         return cuerpo
 
     def codigo(self, estado: Dict[str, Any], bloques: List[str], firma: str = "", cuerpo: str = "") -> str:
-        crit = "\n".join(f"verificar({i + 1}, {c})" for i, c in enumerate(estado.get("criterios", [])))
+        crit = "\n".join(f"verificar({i + 1}, {json.dumps(c, ensure_ascii=False)})" for i, c in enumerate(estado.get("criterios", [])))
         nombres = [v for v in estado.get("variables", []) if re.fullmatch(r"\w+", str(v))]
         vals = ("for _n in %r:\n    print('VALOR', _n, '=', globals().get(_n, 'SIN DEFINIR'))\n" % (nombres,)) if nombres else ""
         return ensamblar(PRELUDIO_PY, estado.get("preambulo", ""), *bloques, cuerpo, "# --- criterios fijados antes de resolver ---\n" + vals + crit,
@@ -875,6 +890,14 @@ class Motor:
         if self.ruta_estado.exists():
             try:
                 datos = json.loads(self.ruta_estado.read_text(encoding="utf-8"))
+                espec = problema.get("especificacion")
+                if (isinstance(espec, dict) and datos.get("estado") != "verificado" and datos.get("version") == ESTADO_VERSION
+                        and datos.get("huella") == self.huella_problema(problema)
+                        and (datos.get("criterios") != espec.get("criterios") or datos.get("preambulo") != str(espec.get("preambulo", "")).strip())):
+                    self.log("Hay una especificación revisada para este problema y el estado guardado usa otra (escrita por el modelo): "
+                             "se guarda copia y se empieza con la revisada.")
+                    self.ruta_estado.rename(self.dir / f"estado.{int(time.time())}.bak.json")
+                    datos = {}
                 if datos.get("version") == ESTADO_VERSION and datos.get("huella") == self.huella_problema(problema):
                     self.estado = datos
                     self.t_base = float(datos.get("tiempo", 0.0))
@@ -882,8 +905,9 @@ class Motor:
                     if datos["estado"] == "fallido":
                         self.reabrir_fallidos()
                     return
-                self.log("El estado guardado es de otro problema o versión: se conserva como copia y se empieza de nuevo.")
-                self.ruta_estado.rename(self.dir / f"estado.{int(time.time())}.bak.json")
+                if datos:
+                    self.log("El estado guardado es de otro problema o versión: se conserva como copia y se empieza de nuevo.")
+                    self.ruta_estado.rename(self.dir / f"estado.{int(time.time())}.bak.json")
             except (OSError, json.JSONDecodeError) as e:
                 self.log(f"Estado ilegible ({e}); se empieza de nuevo.")
                 self.ruta_estado.rename(self.dir / f"estado.{int(time.time())}.corrupto.json")
@@ -1216,7 +1240,9 @@ class Motor:
         self.guardar()
         self.evento("verificado", archivo=str(archivo))
         biblioteca_anadir(self.cfg.biblioteca, {"id": self.estado["problema"].get("id", ""), "backend": self.cfg.backend,
-                          "enunciado": self.estado["problema"]["enunciado"], "codigo": codigo,
+                          "enunciado": self.estado["problema"]["enunciado"],
+                          "codigo": ensamblar(self.estado.get("definiciones", ""), self.bloque_nodo(raiz)) if isinstance(ver, LeanVerificador)
+                          else ensamblar("# contexto:\n" + self.estado.get("preambulo", ""), "# solución:\n" + raiz["cuerpo"]),
                           "etiquetas": list(self.estado["problema"].get("etiquetas", []))})
         return True
 

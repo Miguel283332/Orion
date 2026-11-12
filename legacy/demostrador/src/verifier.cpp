@@ -463,13 +463,28 @@ Devuelve SOLO JSON: {"lemas": ["theorem nombre (...) : proposicion := by"]})P",
 const char* PRELUDIO_PY = R"PY(import sympy as sp
 from sympy import *
 
-def verificar(i, cond):
+def verificar(i, criterio):
+    import ast as _ast
+    _g = globals()
+    texto = criterio if isinstance(criterio, str) else ""
+    cond = eval(criterio, _g) if texto else criterio
+    if not (cond is True or cond == sp.true) and texto:
+        # 'a == b' compara la FORMA en SymPy: se acepta si los VALORES coinciden (sp.simplify(a - b) == 0)
+        try:
+            t = _ast.parse(texto, mode="eval").body
+            if isinstance(t, _ast.Compare) and len(t.ops) == 1 and isinstance(t.ops[0], _ast.Eq):
+                a = eval(compile(_ast.Expression(t.left), "<criterio>", "eval"), _g)
+                b = eval(compile(_ast.Expression(t.comparators[0]), "<criterio>", "eval"), _g)
+                if sp.simplify(sp.sympify(a) - sp.sympify(b)) == 0:
+                    cond = True
+        except Exception:
+            pass
     if cond is True or cond == sp.true:
         pass
     elif cond is False or cond == sp.false:
-        raise AssertionError("CRITERIO_FALLA %s: el criterio vale False. Ojo: '==' compara la FORMA, no el valor; compara con simplify(a - b) == 0. Mira los VALORES impresos arriba." % i)
+        raise AssertionError("CRITERIO_FALLA %s: el criterio `%s` es falso con los VALORES calculados (mira VALOR arriba)." % (i, texto))
     else:
-        raise AssertionError("CRITERIO_FALLA %s: el criterio no es booleano (vale %s). Usa una comparacion, p. ej. simplify(a - b) == 0." % (i, cond))
+        raise AssertionError("CRITERIO_FALLA %s: el criterio `%s` no es booleano (vale %s)." % (i, texto, cond))
     print("CRITERIO_OK %s" % i)
 )PY";
 
@@ -543,7 +558,7 @@ std::string SympyVerificador::extraer_cuerpo(const std::string& texto) {
 std::string SympyVerificador::codigo(const json& estado, const std::vector<std::string>& bloques, const std::string&, const std::string& cuerpo) {
     std::string crit;
     if (estado.contains("criterios"))
-        for (size_t i = 0; i < estado["criterios"].size(); ++i) crit += (i ? "\n" : "") + std::string("verificar(") + std::to_string(i + 1) + ", " + estado["criterios"][i].get<std::string>() + ")";
+        for (size_t i = 0; i < estado["criterios"].size(); ++i) crit += (i ? "\n" : "") + std::string("verificar(") + std::to_string(i + 1) + ", " + json(estado["criterios"][i].get<std::string>()).dump() + ")";
     std::vector<std::string> partes = {PRELUDIO_PY, estado.value("preambulo", std::string())};
     partes.insert(partes.end(), bloques.begin(), bloques.end());
     partes.push_back(cuerpo);

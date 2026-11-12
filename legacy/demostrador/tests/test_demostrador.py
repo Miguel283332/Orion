@@ -668,6 +668,30 @@ class TestSympy(Base):
         self.assertIn("CRITERIO_FALLA", tercero)
         self.assertIn("CAMBIA de enfoque", tercero)
 
+    def test_criterio_con_igualdad_compara_valores(self):
+        """Caso real de Colab: el modelo escribió `v_esc == sqrt(2*G*M/r)` y solve da sqrt(2)*sqrt(G*M/r): misma VALOR, otra FORMA."""
+        ver = d.SympyVerificador(self.cfg_sympy())
+        est = {"preambulo": "G, M, c, r, m, v = symbols('G M c r m v', positive=True)", "variables": ["v_esc"],
+               "criterios": ["v_esc == sqrt(2*G*M/r)", "v_esc.subs(r, 2*G*M/c**2) == c"]}
+        bien = "v_esc = solve(Eq(Rational(1, 2)*m*v**2 - G*M*m/r, 0), v)[0]"
+        ok, salida = ver.comprobar(ver.codigo(est, [], "", bien), nombre_final="x")
+        self.assertTrue(ok, salida)
+        ok, salida = ver.comprobar(ver.codigo(est, [], "", "v_esc = c"), nombre_final="x")
+        self.assertFalse(ok)
+        self.assertIn("v_esc == sqrt(2*G*M/r)", salida)          # el mensaje dice QUÉ criterio falló
+
+    def test_reanudar_adopta_la_especificacion_revisada(self):
+        p = dict(d.PROBLEMAS_INCLUIDOS["escape_schwarzschild"])
+        viejo = {k: v for k, v in p.items() if k != "especificacion"}
+        malas = {"descripcion": "x", "preambulo": "G, M, c, r = symbols('G M c r', positive=True)", "variables": ["v_esc"],
+                 "criterios": ["v_esc.equals(0)"]}
+        llm = FakeLLM(lambda u, kw, n: malas if "Convierte este problema" in u else "```python\nv_esc = 1\n```")
+        self.assertEqual(self.motor_sympy(llm, directos=1).ejecutar(viejo), 1)        # estado fallido con criterios del modelo
+        llm2 = FakeLLM(lambda u, kw, n: self.BIEN if "Resuelve este problema DERIVANDO" in u else {})
+        self.assertEqual(self.motor_sympy(llm2).ejecutar(p), 0)
+        self.assertEqual(self.estado()["criterios"], p["especificacion"]["criterios"])
+        self.assertTrue(any("especificación revisada" in l for l in self.logs))
+
     def test_la_trampa_no_pasa(self):
         trampa = "```python\nv_esc = sqrt(2*G*M/r)\nverificar(1, True)\n```"
         llm = FakeLLM(self.router([trampa, self.BIEN]))
