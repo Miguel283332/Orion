@@ -1,102 +1,100 @@
 # Orion
 
-Orion es una IA autónoma que **vive en tu ordenador**. Está siempre en marcha y piensa también cuando no le hablas. Usa **un único modelo de lenguaje local** a través de [Ollama](https://ollama.com) (en el portátil, `qwen2.5:3b`) y está escrita en **C++20**, sin dependencias que descargar.
+Orion es un modelo de lenguaje que **se mejora a sí mismo de forma autónoma y continua**: cambia sus propios pesos, mide cada cambio y, cuando se estanca, **amplía su propia capacidad** (hasta añadirse capas). Tú solo lo arrancas.
 
-Lo que hace:
-- **Habla contigo** por la terminal y por una **interfaz web local** con paneles.
-- **Usa el ordenador con acceso total**: comandos, archivos e internet.
-- **Recuerda por significado**, no solo por palabras, y resume las conversaciones antiguas para no olvidarlas.
-- **Aprende**:
-  - se pone metas ("voy a aprender") y las trabaja a solas, paso a paso;
-  - guarda como **habilidades** los scripts que le funcionan;
-  - **practica con un juez real**: predice lo que hace un script y lo comprueba ejecutándolo.
-- **Se mejora a sí misma con medida**: propone cambios en sus instrucciones, los mide con un banco de pruebas y un examen de referencia, y solo se queda con los que la mejoran. También puede modificar y recompilar su código C++; el guardián vuelve a la versión anterior si algo falla.
-- **Escala**: si registras otro ordenador tuyo con Ollama (la RTX), se pasa sola a él cuando es más rápido y vuelve cuando se apaga. Te avisa cuando el hardware la limita.
+Parte de un modelo ya entrenado (Qwen2.5, elegido según tu GPU) y repite este ciclo sin parar:
 
-> **Para empezar:** [docs/WINDOWS.md](docs/WINDOWS.md) explica paso a paso cómo hacer `git pull`, compilar en VS Code y arrancarla.
-> **En Google Colab** (con GPU): [colab/Orion_Colab.ipynb](colab/Orion_Colab.ipynb) clona, compila en C++ y la ejecuta ([docs/COLAB.md](docs/COLAB.md)).
+```
+ EXPLORAR ──► ENTRENAR ──► MEDIRSE ──► ¿mejora claramente? ──sí──► se queda con los pesos nuevos
+    ▲       (sus pesos)  (validación)          │no
+    │                                          ▼
+    │                              vuelve a los pesos anteriores
+    │                                          │
+    └──── CRECER (si lleva varias sin mejorar) ◄┘
+```
 
-## Versión 0.3: qué hay
+1. **Explorar.** Elige problemas de su currículo (más de lo que más falla), da varios intentos a cada uno y un **juez automático** (SymPy) marca los correctos. No hay opiniones: una respuesta es correcta o no.
+2. **Entrenar.** Ajusta sus pesos (adaptador LoRA) con sus propias respuestas verificadas. De los problemas que no resuelve en ningún intento estudia la solución calculada por SymPy.
+3. **Medirse.** Repite la **validación**: 180 problemas fijos que nunca entran en el entrenamiento.
+4. **Aceptar o deshacer.** Solo se queda con los pesos nuevos si gana claramente más problemas de los que pierde. Si no, vuelve a los anteriores.
+5. **Crecer.** Tras 3 generaciones seguidas sin mejorar, amplía su capacidad, de lo más barato a lo más caro:
+   explorar el doble → duplicar el rango del adaptador (16 → 128) → extender el adaptador a las capas MLP → **añadirse una capa nueva** (hasta 4) → explorar el cuádruple.
+   Cuando ya no cabe más en tu hardware, lo dice: hace falta un modelo base mayor.
 
-| Capacidad | Estado |
+Las ampliaciones **conservan lo aprendido**: justo después de ampliar, el modelo responde igual que antes; lo nuevo empieza sin efecto y solo cuenta si el entrenamiento posterior lo aprovecha.
+
+Aparte hay un **examen** (otros 180 problemas) que nunca decide nada: solo informa de si el progreso es real y no una adaptación a la validación.
+
+## Qué aprende
+
+Matemáticas y física con respuesta comprobable, en 9 dominios y 5 niveles de dificultad: aritmética, ecuaciones lineales y cuadráticas, desarrollo de polinomios, derivadas, integrales, sistemas de ecuaciones, cinemática y energía/electricidad. Los problemas se generan sin límite. Cada dominio empieza en el nivel 1 y desbloquea el siguiente al acertar el 60 %.
+
+## Arrancarlo
+
+**Google Colab (GPU gratis):** abre [colab/Orion_Colab.ipynb](colab/Orion_Colab.ipynb) y ejecuta las celdas. Guarda todo en tu Google Drive; cuando Colab corte la sesión, vuelve a ejecutarlas y continúa donde estaba.
+
+**PC con RTX (Windows o Linux):**
+
+Primero instala PyTorch con CUDA con el comando que te dé [pytorch.org/get-started/locally](https://pytorch.org/get-started/locally/) para tu sistema. Después:
+
+```bash
+pip install -r requirements.txt
+```
+```bash
+python -m orion vivir
+```
+
+Se para con Ctrl-C y se puede cortar en cualquier momento: al volver a arrancar continúa desde la última versión aceptada.
+
+| Orden | Qué hace |
 |---|---|
-| Chat en terminal y web; tu mensaje interrumpe lo que piensa a solas; `/para` | ✅ |
-| Memoria persistente: conversación, recuerdos, diario, `yo.md` con versiones | ✅ |
-| **Memoria por significado** (vectores del mismo modelo) + palabras, y **resúmenes** de conversaciones antiguas | ✅ nuevo |
-| Acceso total: comandos, archivos, internet, su código, su memoria; "Mi cuerpo" (código, memoria, pesos, hardware) | ✅ |
-| **Metas por pasos**: planifica, hace un paso cada vez, se puede interrumpir y retomar, avisa con `★` | ✅ mejorado |
-| **Habilidades**: scripts verificados que guarda y reutiliza (`/habilidades`) | ✅ nuevo |
-| **Práctica con juez real**: ajusta la dificultad para acertar ~la mitad; los ejemplos verificados quedan para entrenar en la fase 5 | ✅ nuevo |
-| **Automejora medida**: banco de pruebas + examen de referencia (con huella), acepta solo lo que mejora, commit en git, `/mejoras`, `/volver` | ✅ nuevo |
-| Automejora del código C++: compilarse y reiniciarse; el guardián aplica la versión o vuelve atrás | ✅ |
-| **Interfaz web local** (`/web`): chat, actividad en directo, estado, metas, mejoras, acciones y recuerdos. La puede modificar ella | ✅ nuevo |
-| **Escalado**: dispositivos registrados, cambio automático al más rápido, vuelta al local si cae, avisos de límites | ✅ nuevo |
-| Cambiar sus pesos (entrenamiento LoRA con GPU) | fase 5, pendiente |
+| `python -m orion vivir` | el bucle continuo (`--generaciones N` o `--minutos N` para limitarlo) |
+| `python -m orion estado` | generación, capas, parámetros, validación, examen, currículo y últimos pasos |
+| `python -m orion examen` | repite ahora la validación y el examen |
+| `python -m orion chat` | plantearle problemas a mano |
+| `python -m orion autoprueba` | comprueba el juez (sin modelo) |
 
-## Uso
+Opciones comunes: `--datos CARPETA` (por defecto `datos/`) y, solo la primera vez, `--modelo NOMBRE`.
 
-```
-build\Release\guardian.exe
-```
-Escribe y pulsa Enter, o abre la interfaz web con `/web abrir`. Ejemplos:
-- "mira qué hay en mi carpeta de Descargas"
-- "busca qué es la gravedad cuántica de bucles y guárdame un resumen en un archivo"
-- `/aprende cómo funciona git por dentro`
-- `/mejorate` (se mide, propone un cambio, lo mide y decide)
+**Modelo base** (automático según la memoria de la GPU): 20 GB o más → `Qwen/Qwen2.5-3B-Instruct`; 6 GB o más → `Qwen2.5-1.5B-Instruct`; menos o sin GPU → `Qwen2.5-0.5B-Instruct`. Sin GPU funciona, pero es demasiado lento para progresar.
 
-Comandos ([lista completa](docs/COMANDOS.md)):
-- **Estado y medidas:** `/estado` · `/modelo` · `/hardware` · `/limites` · `/config`
-- **Memoria:** `/memoria` · `/recuerdos` · `/buscar` · `/diario` · `/yo`
-- **Aprendizaje:** `/metas` · `/aprende` · `/habilidades` · `/practica`
-- **Automejora:** `/mejoras` · `/mejorate` · `/volver`
-- **Dispositivos y web:** `/dispositivos` · `/web`
-- **Control:** `/acciones` · `/permisos` · `/reflexiona` · `/pausa` · `/sigue` · `/ritmo` · `/para` · `/versiones` · `/reinicia` · `/salir`
+## Qué hay en `datos/`
 
-## Documentación
-
-| Documento | Contenido |
+| Archivo | Contenido |
 |---|---|
-| [WINDOWS.md](docs/WINDOWS.md) | instalación, `git pull`, compilación en VS Code, arranque, actualización y problemas frecuentes |
-| [COLAB.md](docs/COLAB.md) | el cuaderno de Colab: clonar, compilar en C++ y ejecutar con GPU |
-| [ACCESO_TOTAL.md](docs/ACCESO_TOTAL.md) | qué puede hacer en tu ordenador, qué hace a solas, cómo ver todo y cómo cambiar los permisos |
-| [APRENDER.md](docs/APRENDER.md) | memoria por significado, metas por pasos, habilidades y práctica con juez real |
-| [AUTOMEJORA.md](docs/AUTOMEJORA.md) | el ciclo medido, el banco y el examen, qué puede cambiar y qué no, y sus límites |
-| [ESCALAR.md](docs/ESCALAR.md) | usar tu PC con RTX (u otro) desde el portátil, y los avisos de límites |
-| [COMANDOS.md](docs/COMANDOS.md) | todos los comandos, opciones de arranque y `datos/config.json` |
-| [ARQUITECTURA.md](docs/ARQUITECTURA.md) | bucle de vida, prioridades a solas, memoria, herramientas, web, guardián y código |
-| [CONSCIENCIA.md](docs/CONSCIENCIA.md) | qué estructura imita, qué no sabemos y qué se registra |
-| [HOJA_DE_RUTA.md](docs/HOJA_DE_RUTA.md) | fases y en qué punto está cada una |
+| `config.json` | todos los ajustes (problemas por generación, paciencia, rango máximo, capas máximas…) |
+| `estado.json` | generación, modelo base, adaptador aceptado, capas añadidas, resultados y currículo |
+| `generaciones.jsonl` | el registro de cada generación y cada ampliación |
+| `ejemplos.jsonl` | cada respuesta verificada con la que se ha entrenado |
+| `adaptadores/` | sus pesos aprendidos (la versión aceptada) |
+| `bases/` | el modelo base ampliado, cuando se ha añadido capas |
 
-## Estructura
+## Código
 
-```
-Orion/
-├─ src/, include/orion/   C++20: util, http, ollama, memoria, sistema, herramientas, habilidades, mente, evaluacion,
-│                         automejora, nucleo; main_orion (el agente) y main_guardian (el guardián)
-├─ prompts/sistema.md     sus instrucciones de comportamiento (las mejora ella, midiendo)
-├─ evaluacion/            banco.json (su banco de pruebas) y examen_referencia.json
-├─ interfaz/index.html    su interfaz web (la puede modificar ella)
-├─ tests/test_orion.cpp   pruebas con un Ollama simulado (no necesitan Ollama ni red)
-├─ third_party/json.hpp   nlohmann/json (MIT), incluido
-├─ docs/                  documentación
-├─ datos/                 (se crea al arrancar) su memoria, configuración y registros
-└─ legacy/                proyectos anteriores
-```
+| Archivo | Qué hace |
+|---|---|
+| `orion/problemas.py` | generadores de problemas por dominio y nivel; validación y examen fijos |
+| `orion/juez.py` | decide si una respuesta es correcta (no ejecuta nada de lo que escribe el modelo) |
+| `orion/curriculo.py` | qué practicar, cuándo subir de nivel y cuándo una mejora es clara |
+| `orion/modelo.py` | el modelo: generar, entrenar, deshacer, ampliar el adaptador y añadir capas |
+| `orion/bucle.py` | el bucle de vida |
+| `tests/` | 17 pruebas (`python -m pytest tests`), sin GPU ni internet |
 
-## Estado real (qué está comprobado y qué no)
+## Estado real
 
-**Comprobado** con **214 comprobaciones** automáticas y un Ollama simulado:
-- memoria por significado (encuentra "física" al preguntar por "ciencia") y resúmenes;
-- habilidades que solo se guardan si funcionan; práctica que ejecuta, compara, ajusta la dificultad y saca lecciones;
-- metas por pasos;
-- un **ciclo de automejora completo**, con procesos y git reales: mide (0/2 → 1/2), acepta; en el segundo ciclo rechaza un cambio que empeora el examen; `/volver` lo deshace; avisa si el examen cambia;
-- la interfaz web (token, protección del `Host`, chat, comandos, sondeo continuo);
-- cambio automático al dispositivo más rápido y vuelta al local si cae; avisos de límites;
-- lo anterior: herramientas, guardián y versiones, interrupción, ejecutables reales.
-
-Sin errores con AddressSanitizer, UBSan y ThreadSanitizer, ni con clang `-Werror`. Compila para Windows (MinGW). La página web se probó en Chromium (claro, oscuro y móvil) sin errores de JavaScript.
+**Comprobado** con pruebas automáticas, usando una red diminuta con la misma arquitectura que Qwen:
+- el juez acepta la respuesta correcta de 450 problemas y rechaza respuestas falsas o con código;
+- entrenar cambia los pesos y deshacer los recupera exactamente;
+- ampliar el adaptador y añadir una capa no alteran la salida, y lo nuevo recibe aprendizaje;
+- el ciclo completo: acepta una mejora real, deshace un entrenamiento que empeora, recorre todas las ampliaciones al estancarse, continúa tras un reinicio y no deja nada a medias si se corta.
 
 **No comprobado todavía:**
-- con Ollama y `qwen2.5:3b` reales: calidad de sus decisiones, si el modelo da vectores de significado (si no, busca por palabras) y velocidad real de las evaluaciones;
-- con MSVC en Windows;
-- la búsqueda web real.
+- la ejecución con un Qwen real en GPU (aquí no había GPU ni acceso a Hugging Face);
+- cuánto mejora de verdad y a qué ritmo: eso lo dirán `estado` y el examen tras unas horas en tu máquina.
+
+**Límites:**
+- Mejora en los dominios que tienen juez. Demostrar teoremas (Lean) y programar con tests son los siguientes dominios que añadir.
+- Una capa nueva aprende a través del adaptador, no entera; aporta menos que pasar a un modelo base mayor.
+- Todavía no modifica su propio código.
+
+Los proyectos anteriores (el agente en C++ con Ollama incluido) están en `legacy/`.

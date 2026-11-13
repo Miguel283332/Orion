@@ -9,3 +9,4 @@ __pycache__/
 *.part
 orion_home/
 demostrador_runs/
+.pytest_cache/
