@@ -100,7 +100,7 @@ Opciones comunes: `--datos CARPETA` (por defecto `datos/`) y, solo la primera ve
 ## Estado real
 
 **Comprobado** con pruebas automáticas, usando una red diminuta con la misma arquitectura que Qwen:
-- el juez acepta la respuesta correcta de 600 problemas de los 12 dominios y rechaza las falsas;
+- el juez acepta la respuesta correcta de 450 problemas de los 12 dominios y rechaza las falsas;
 - el ejecutor de código corre funciones normales y bloquea archivos, importaciones peligrosas, bucles infinitos y errores;
 - un ejercicio inventado solo se guarda si su solución funciona, no es trivial y no está repetido;
 - el traslado a un modelo mayor se hace si mejora y se descarta si empeora;
