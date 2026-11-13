@@ -1,0 +1,4 @@
+torch>=2.2
+transformers>=4.45
+peft>=0.13
+sympy>=1.12
