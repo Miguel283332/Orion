@@ -29,6 +29,25 @@ def elegir_modelo() -> str:
     return [m for m, gb in FAMILIA if gb <= memoria_gpu()][-1]
 
 
+def normalizar_modelo(nombre: str) -> tuple[str, str]:
+    """(modelo de Hugging Face, aviso). Traduce los nombres al estilo de Ollama ("qwen2.5:3b"), que es lo que guardaba
+    el Orion anterior en config.json; si no reconoce el nombre o el modelo no cabe en la GPU, elige automáticamente."""
+    import os
+    import re
+    if nombre in ("", "auto"):
+        return elegir_modelo(), ""
+    if os.path.isdir(nombre) or ":" not in nombre:
+        return nombre, ""
+    m = re.fullmatch(r"qwen2\.5:(0\.5|1\.5|3|7)b(-instruct)?", nombre.strip().lower())
+    candidato = f"Qwen/Qwen2.5-{m.group(1)}B-Instruct" if m else ""
+    gb = dict(FAMILIA).get(candidato)
+    if gb is not None and gb <= memoria_gpu():
+        return candidato, f"«{nombre}» es un nombre de Ollama; uso su equivalente de Hugging Face: {candidato}"
+    auto = elegir_modelo()
+    motivo = f"{candidato} no cabe en esta GPU" if candidato else f"no reconozco el modelo «{nombre}»"
+    return auto, f"{motivo}; uso {auto}"
+
+
 def memoria_gpu() -> float:
     return torch.cuda.get_device_properties(0).total_memory / 2**30 if torch.cuda.is_available() else 0.0
 

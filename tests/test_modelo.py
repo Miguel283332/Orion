@@ -119,3 +119,19 @@ def test_ciclo_completo_con_red_real(base, tmp_path):
     o2 = Orion(tmp_path, decir=mensajes.append)                # reinicio: carga la base ampliada y su adaptador
     assert o2.modelo.num_capas() == 5 and o2.medir(o2.validacion) == e.validacion
     assert "5 (1 añadidas por mí)" in o2.resumen()
+
+
+def test_nombres_de_modelo_al_estilo_de_ollama(tmp_path, monkeypatch):
+    from orion import modelo
+    monkeypatch.setattr(modelo, "memoria_gpu", lambda: 15.0)
+    assert modelo.normalizar_modelo("auto")[0] == "Qwen/Qwen2.5-3B-Instruct"
+    assert modelo.normalizar_modelo("qwen2.5:3b") == ("Qwen/Qwen2.5-3B-Instruct", modelo.normalizar_modelo("qwen2.5:3b")[1])
+    assert "Ollama" in modelo.normalizar_modelo("qwen2.5:1.5b")[1] and modelo.normalizar_modelo("qwen2.5:1.5b")[0] == "Qwen/Qwen2.5-1.5B-Instruct"
+    nombre, aviso = modelo.normalizar_modelo("qwen2.5:7b")            # no cabe en 15 GB
+    assert nombre == "Qwen/Qwen2.5-3B-Instruct" and "no cabe" in aviso
+    nombre, aviso = modelo.normalizar_modelo("llama3:8b")
+    assert nombre == "Qwen/Qwen2.5-3B-Instruct" and "no reconozco" in aviso
+    assert modelo.normalizar_modelo("Qwen/Qwen2.5-0.5B-Instruct") == ("Qwen/Qwen2.5-0.5B-Instruct", "")
+    assert modelo.normalizar_modelo(str(tmp_path)) == (str(tmp_path), "")
+    monkeypatch.setattr(modelo, "memoria_gpu", lambda: 0.0)
+    assert modelo.normalizar_modelo("qwen2.5:3b")[0] == "Qwen/Qwen2.5-0.5B-Instruct"
