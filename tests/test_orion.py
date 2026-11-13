@@ -84,11 +84,14 @@ class ModeloSimulado:
     """Acierta una fracción `nivel` de los problemas de aritmética; entrenar la cambia en `paso`."""
     def __init__(self, nivel=0.2, paso=0.25):
         self.nivel, self.paso, self.rango, self.modulos, self.capas, self.entrenamientos = nivel, paso, 16, ["q_proj"], 4, 0
+        self.invento = "no se me ocurre nada"
 
     def _sabe(self, enunciado):
         return int(hashlib.sha1(enunciado.encode()).hexdigest(), 16) % 1000 < self.nivel * 1000
 
-    def generar(self, enunciados, n=1, temperatura=0.0, max_tokens=0, lote=0, parar=None):
+    def generar(self, enunciados, n=1, temperatura=0.0, max_tokens=0, lote=0, parar=None, sistema=""):
+        if "Inventas" in sistema:
+            return [[self.invento]] * len(enunciados)
         return [[f"RESPUESTA: {sp.sympify(e.split(': ')[1]) if self._sabe(e) else 'x'}"] * (n if temperatura > 0 else 1) for e in enunciados]
 
     def entrenar(self, ejemplos, *a, **k):
@@ -112,11 +115,12 @@ def orion_simulado(tmp_path, monkeypatch):
     monkeypatch.setattr(problemas, "DOMINIOS", ["aritmetica"])
     monkeypatch.setattr(cur, "DOMINIOS", ["aritmetica"])
     escribir_json(tmp_path / "config.json", {"modelo": "simulado", "n_validacion": 60, "n_examen": 60, "problemas_por_generacion": 20,
-                                             "paciencia": 1, "rango_max": 32, "max_capas_nuevas": 1})
+                                             "paciencia": 1, "rango_max": 32, "max_capas_nuevas": 1, "inventos_por_generacion": 2})
 
-    def crear(nivel=0.2, paso=0.25):
+    def crear(nivel=0.2, paso=0.25, mayor=None):
         sim = ModeloSimulado(nivel, paso)
-        monkeypatch.setattr(bucle.Orion, "_cargar_modelo", lambda self: sim)
+        monkeypatch.setattr(bucle.Orion, "_crear_modelo", lambda self, base, *a: mayor if base == "grande" else sim)
+        monkeypatch.setattr(bucle, "siguiente_modelo", lambda actual: "grande" if mayor and actual == "simulado" else None)
         return bucle.Orion(tmp_path, decir=lambda *_: None), sim
     return crear, tmp_path
 
@@ -175,3 +179,111 @@ def test_un_corte_a_mitad_no_deja_nada_a_medias(orion_simulado):
     o.generacion()
     despues = Estado.cargar(datos)
     assert despues.generacion == 0 and despues.validacion == antes.validacion and sim.nivel == pytest.approx(0.2)
+
+
+def test_al_agotar_el_modelo_se_traslada_a_uno_mayor_solo_si_no_empeora(orion_simulado):
+    crear, datos = orion_simulado
+    o, sim = crear(nivel=0.5, paso=-0.3, mayor=ModeloSimulado(nivel=0.1, paso=0.0))      # el mayor es peor: se descarta
+    o.vivir(generaciones=6)
+    e = Estado.cargar(datos)
+    assert e.modelo_original == "simulado" and e.migracion_descartada == "grande" and e.migraciones == 0 and o.modelo is sim
+    o.vivir(generaciones=1)                                                              # ya no lo vuelve a intentar: límite
+    assert json.loads((datos / "generaciones.jsonl").read_text().splitlines()[-1])["tipo"] == "limite"
+
+
+def test_traslado_a_un_modelo_mayor_que_si_mejora(orion_simulado):
+    crear, datos = orion_simulado
+    grande = ModeloSimulado(nivel=0.6, paso=0.2)
+    o, sim = crear(nivel=0.5, paso=-0.3, mayor=grande)
+    o.vivir(generaciones=6)
+    e = Estado.cargar(datos)
+    assert o.modelo is grande and e.modelo_base == e.modelo_original == "grande" and e.migraciones == 1
+    assert e.capas_nuevas == 0 and e.rango == 16 and e.multiplicador_exploracion == 1
+    assert not any((datos / "bases").iterdir())                                          # la base ampliada del modelo anterior se borra
+    assert sum(e.validacion) > 60 * 0.7 and grande.entrenamientos == 1                   # se llevó lo aprendido: entrenó con sus ejemplos
+    assert "traslado a grande ✓ hecho" in o.resumen()
+
+
+# ------------------------------------------------------------------ programación: ejecución aislada, juez e inventos
+from orion import programas  # noqa: E402
+
+
+def test_el_ejecutor_corre_codigo_normal_y_bloquea_el_peligroso():
+    assert programas.ejecutar("def f(a, b):\n    return a + b", "f", [[1, 2], [3, 4]]) == [3, 7]
+    assert programas.ejecutar("import math\ndef f(n):\n    return (math.gcd(n, 12), {n}, (n, 0.1 + 0.2))", "f", [[8]]) == [[4, [8], [8, 0.3]]]
+    for malo in ["import os\ndef f():\n    return os.getcwd()", "def f():\n    return open('/etc/passwd').read()",
+                 "def f():\n    return ().__class__.__bases__", "def f():\n    return __import__('os')", "import subprocess\ndef f():\n    return 1",
+                 "def f():\n    return eval('1')", "from os import path\ndef f():\n    return 1", "def f(:\n    pass"]:
+        assert not programas.codigo_seguro(malo) and programas.ejecutar(malo, "f", [[]]) is None, malo
+    assert programas.ejecutar("def f():\n    while True:\n        pass", "f", [[]], segundos=2) is None          # bucle infinito
+    assert programas.ejecutar("def f(n):\n    return 1 // n", "f", [[0]]) is None                               # excepción
+    assert programas.ejecutar("def g():\n    return 1", "f", [[]]) is None                                       # falta la función
+
+
+def test_el_juez_de_codigo_acepta_todas_las_referencias_y_rechaza_lo_incorrecto():
+    r = random.Random(5)
+    vistos = set()
+    for i in range(150):
+        p = problemas.GENERADORES["codigo"](r, i % 5 + 1)
+        d = json.loads(p.verdad)
+        if d["funcion"] in vistos:
+            continue
+        vistos.add(d["funcion"])
+        assert juez.juzgar(p, "Aquí está:\n```python\n" + p.referencia + "\n```\nEspero que sirva."), d["funcion"]
+        assert not juez.juzgar(p, f"```python\ndef {d['funcion']}(*a):\n    return None\n```"), d["funcion"]
+        assert not juez.juzgar(p, "No sé hacerlo. RESPUESTA: 3")
+    assert vistos == {f[1] for f in programas.FAMILIAS}
+    p = problemas.GENERADORES["codigo"](r, 2)
+    assert juez.juzgar(p, "```python\ndef otra():\n    pass\n```\ny la buena:\n```python\n" + p.referencia)   # bloque sin cerrar, varios bloques
+
+
+INVENTO = """ENUNCIADO: Devuelve la suma de los cuadrados de los números pares de la lista.
+```python
+def suma_cuadrados_pares(lista):
+    return sum(v * v for v in lista if v % 2 == 0)
+```
+ENTRADAS: [[[1, 2, 3, 4]], [[]], [[6]], [[5, 7]], [[2, 2]]]
+Espero que te guste."""
+
+
+def test_un_ejercicio_inventado_solo_vale_si_su_solucion_funciona():
+    p = programas.invento_valido(INVENTO)
+    assert p and p.dominio == "inventados" and "suma_cuadrados_pares(lista)" in p.enunciado
+    assert json.loads(p.verdad)["salidas"] == [20, 0, 36, 0, 8]
+    assert juez.juzgar(p, "```python\ndef suma_cuadrados_pares(lista):\n    t = 0\n    for v in lista:\n        if v % 2 == 0:\n            t += v ** 2\n    return t\n```")
+    assert not juez.juzgar(p, "```python\ndef suma_cuadrados_pares(lista):\n    return sum(lista)\n```")
+    for malo in [INVENTO.replace("v % 2 == 0", "v % 0 == 0"),                       # la solución falla
+                 INVENTO.replace("return sum(v * v for v in lista if v % 2 == 0)", "return 7"),   # trivial: siempre lo mismo
+                 INVENTO.replace("return sum", "import os\n    return sum"),         # código no permitido
+                 INVENTO.replace("ENTRADAS:", "PRUEBAS:"), INVENTO.replace("[[6]], [[5, 7]], [[2, 2]]]", ""), "hola"]:
+        assert programas.invento_valido(malo) is None, malo
+
+
+def test_los_inventos_entran_en_su_curriculo_y_los_practica(orion_simulado):
+    crear, datos = orion_simulado
+    o, sim = crear(nivel=0.2, paso=0.25)
+    sim.invento = INVENTO
+    generar = sim.generar
+    sim.generar = lambda e, *a, **k: [["no sé"] * (k.get("n", 1) if k.get("temperatura", 0) > 0 else 1) if "función de Python" in x else y
+                                      for x, y in zip(e, generar([x if "función" not in x else "Calcula: 1 + 1" for x in e], *a, **k))]
+    o.vivir(generaciones=2)
+    assert len(o.inventados) == 1                                                     # el repetido no se guarda dos veces
+    guardados = [json.loads(l) for l in (datos / "inventados.jsonl").read_text().splitlines()]
+    assert len(guardados) == 1 and guardados[0]["referencia"].startswith("def suma_cuadrados_pares")
+    ejemplos = [json.loads(l) for l in (datos / "ejemplos.jsonl").read_text().splitlines()]
+    propio = [x for x in ejemplos if x["dominio"] == "inventados"]
+    assert propio and propio[0]["origen"] == "referencia" and "```python" in propio[0]["respuesta"]   # no lo resolvió: estudia su propia solución
+    from orion import bucle
+    assert len(bucle.Orion(datos, decir=lambda *_: None).inventados) == 1 and "inventados por mí" in o.resumen()
+
+
+def test_texto_y_razonamiento():
+    t = Problema("logica", 1, "…", "texto", "miércoles")
+    assert juez.juzgar(t, "RESPUESTA: Miercoles.") and juez.juzgar(t, "RESPUESTA: «miércoles»") and not juez.juzgar(t, "RESPUESTA: jueves")
+    o = Problema("lenguaje", 3, "…", "texto", "agua, luna, sol")
+    assert juez.juzgar(o, "RESPUESTA: agua,luna ,  sol") and not juez.juzgar(o, "RESPUESTA: luna, agua, sol")
+    r = random.Random(9)
+    for d in ("logica", "lenguaje"):
+        for i in range(100):
+            p = generar(d, i % 5 + 1, r)
+            assert p.tipo in ("num", "texto") and p.verdad and juez.juzgar(p, problemas.texto_de_referencia(p))

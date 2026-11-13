@@ -13,13 +13,14 @@ Parte de un modelo ya entrenado (Qwen2.5, elegido según tu GPU) y repite este c
     └──── CRECER (si lleva varias sin mejorar) ◄┘
 ```
 
-1. **Explorar.** Elige problemas de su currículo (más de lo que más falla), da varios intentos a cada uno y un **juez automático** (SymPy) marca los correctos. No hay opiniones: una respuesta es correcta o no.
-2. **Entrenar.** Ajusta sus pesos (adaptador LoRA) con sus propias respuestas verificadas. De los problemas que no resuelve en ningún intento estudia la solución calculada por SymPy.
+0. **Inventar.** Se inventa ejercicios de programación nuevos (enunciado, solución y entradas). Los que se ejecutan bien, son deterministas y no están repetidos pasan a su currículo: más adelante tendrá que resolverlos solo con el enunciado.
+1. **Explorar.** Elige problemas de su currículo (más de lo que más falla) y de sus propios ejercicios, da varios intentos a cada uno y un **juez automático** marca los correctos. No hay opiniones: una respuesta es correcta o no.
+2. **Entrenar.** Ajusta sus pesos (adaptador LoRA) con sus propias respuestas verificadas. De los problemas que no resuelve en ningún intento estudia una solución correcta conocida.
 3. **Medirse.** Repite la **validación**: 180 problemas fijos que nunca entran en el entrenamiento.
 4. **Aceptar o deshacer.** Solo se queda con los pesos nuevos si gana claramente más problemas de los que pierde. Si no, vuelve a los anteriores.
 5. **Crecer.** Tras 3 generaciones seguidas sin mejorar, amplía su capacidad, de lo más barato a lo más caro:
-   explorar el doble → duplicar el rango del adaptador (16 → 128) → extender el adaptador a las capas MLP → **añadirse una capa nueva** (hasta 4) → explorar el cuádruple.
-   Cuando ya no cabe más en tu hardware, lo dice: hace falta un modelo base mayor.
+   explorar el doble → duplicar el rango del adaptador (16 → 128) → extender el adaptador a las capas MLP → **añadirse una capa nueva** (hasta 4) → explorar el cuádruple → **trasladarse a un modelo base mayor**.
+   El traslado solo ocurre si el modelo mayor cabe en la GPU: lo entrena con todo lo que ha verificado hasta entonces y se queda en él solo si no acierta menos. Si no cabe, lo dice y sigue trabajando.
 
 Las ampliaciones **conservan lo aprendido**: justo después de ampliar, el modelo responde igual que antes; lo nuevo empieza sin efecto y solo cuenta si el entrenamiento posterior lo aprovecha.
 
@@ -27,7 +28,20 @@ Aparte hay un **examen** (otros 180 problemas) que nunca decide nada: solo infor
 
 ## Qué aprende
 
-Matemáticas y física con respuesta comprobable, en 9 dominios y 5 niveles de dificultad: aritmética, ecuaciones lineales y cuadráticas, desarrollo de polinomios, derivadas, integrales, sistemas de ecuaciones, cinemática y energía/electricidad. Los problemas se generan sin límite. Cada dominio empieza en el nivel 1 y desbloquea el siguiente al acertar el 60 %.
+Todo lo que tiene una respuesta comprobable por una máquina. Ahora, 12 dominios con 5 niveles de dificultad y problemas sin límite:
+
+| Área | Dominios | Juez |
+|---|---|---|
+| Matemáticas | aritmética, ecuaciones lineales y cuadráticas, polinomios, derivadas, integrales, sistemas | SymPy |
+| Física | cinemática, energía y electricidad | SymPy |
+| Razonamiento | lógica (secuencias, deducciones, expresiones booleanas, conjuntos, aritmética modular) | respuesta exacta |
+| Lenguaje | manipular texto letra a letra (invertir, contar, ordenar, cifrar) | respuesta exacta |
+| Programación | escribir funciones de Python (21 familias, de sumar a programación dinámica) | **ejecuta el código** contra casos de prueba |
+| Ejercicios propios | los que se inventa ella | ejecuta el código |
+
+Cada dominio empieza en el nivel 1 y desbloquea el siguiente al acertar el 60 %. Añadir un dominio es escribir un generador y, si hace falta, un juez.
+
+**Sobre ejecutar código:** las funciones que escribe el modelo se ejecutan en un proceso aparte, con límite de tiempo y memoria, y solo si pasan un filtro que prohíbe archivos, red e importaciones fuera de una lista corta (`math`, `itertools`…). En Windows no hay límite de memoria, solo de tiempo.
 
 ## Arrancarlo
 
@@ -56,7 +70,7 @@ Se para con Ctrl-C y se puede cortar en cualquier momento: al volver a arrancar 
 
 Opciones comunes: `--datos CARPETA` (por defecto `datos/`) y, solo la primera vez, `--modelo NOMBRE`.
 
-**Modelo base** (automático según la memoria de la GPU): 20 GB o más → `Qwen/Qwen2.5-3B-Instruct`; 6 GB o más → `Qwen2.5-1.5B-Instruct`; menos o sin GPU → `Qwen2.5-0.5B-Instruct`. Sin GPU funciona, pero es demasiado lento para progresar.
+**Modelo base** (automático, el mayor que cabe en la GPU): 36 GB o más → `Qwen/Qwen2.5-7B-Instruct`; 14 GB → `Qwen2.5-3B-Instruct`; 6 GB → `Qwen2.5-1.5B-Instruct`; menos o sin GPU → `Qwen2.5-0.5B-Instruct`. Sin GPU funciona, pero es demasiado lento para progresar. Si un día arranca en una GPU mayor (por ejemplo, pasas de Colab al PC con RTX copiando `datos/`), se trasladará sola al modelo siguiente cuando se estanque.
 
 ## Qué hay en `datos/`
 
@@ -66,6 +80,7 @@ Opciones comunes: `--datos CARPETA` (por defecto `datos/`) y, solo la primera ve
 | `estado.json` | generación, modelo base, adaptador aceptado, capas añadidas, resultados y currículo |
 | `generaciones.jsonl` | el registro de cada generación y cada ampliación |
 | `ejemplos.jsonl` | cada respuesta verificada con la que se ha entrenado |
+| `inventados.jsonl` | los ejercicios que se ha inventado y que funcionan |
 | `adaptadores/` | sus pesos aprendidos (la versión aceptada) |
 | `bases/` | el modelo base ampliado, cuando se ha añadido capas |
 
@@ -73,17 +88,22 @@ Opciones comunes: `--datos CARPETA` (por defecto `datos/`) y, solo la primera ve
 
 | Archivo | Qué hace |
 |---|---|
-| `orion/problemas.py` | generadores de problemas por dominio y nivel; validación y examen fijos |
-| `orion/juez.py` | decide si una respuesta es correcta (no ejecuta nada de lo que escribe el modelo) |
+| `orion/problemas.py` | matemáticas y física; validación y examen fijos |
+| `orion/razonamiento.py` | lógica y lenguaje |
+| `orion/programas.py` | programación: ejecución aislada, familias de problemas y ejercicios inventados |
+| `orion/juez.py` | decide si una respuesta es correcta |
 | `orion/curriculo.py` | qué practicar, cuándo subir de nivel y cuándo una mejora es clara |
 | `orion/modelo.py` | el modelo: generar, entrenar, deshacer, ampliar el adaptador y añadir capas |
-| `orion/bucle.py` | el bucle de vida |
-| `tests/` | 17 pruebas (`python -m pytest tests`), sin GPU ni internet |
+| `orion/bucle.py` | el bucle de vida: inventar, explorar, entrenar, medir, crecer y trasladarse |
+| `tests/` | 24 pruebas (`python -m pytest tests`), sin GPU ni internet |
 
 ## Estado real
 
 **Comprobado** con pruebas automáticas, usando una red diminuta con la misma arquitectura que Qwen:
-- el juez acepta la respuesta correcta de 450 problemas y rechaza respuestas falsas o con código;
+- el juez acepta la respuesta correcta de 600 problemas de los 12 dominios y rechaza las falsas;
+- el ejecutor de código corre funciones normales y bloquea archivos, importaciones peligrosas, bucles infinitos y errores;
+- un ejercicio inventado solo se guarda si su solución funciona, no es trivial y no está repetido;
+- el traslado a un modelo mayor se hace si mejora y se descarta si empeora;
 - entrenar cambia los pesos y deshacer los recupera exactamente;
 - ampliar el adaptador y añadir una capa no alteran la salida, y lo nuevo recibe aprendizaje;
 - el ciclo completo: acepta una mejora real, deshace un entrenamiento que empeora, recorre todas las ampliaciones al estancarse, continúa tras un reinicio y no deja nada a medias si se corta.
@@ -93,8 +113,9 @@ Opciones comunes: `--datos CARPETA` (por defecto `datos/`) y, solo la primera ve
 - cuánto mejora de verdad y a qué ritmo: eso lo dirán `estado` y el examen tras unas horas en tu máquina.
 
 **Límites:**
-- Mejora en los dominios que tienen juez. Demostrar teoremas (Lean) y programar con tests son los siguientes dominios que añadir.
-- Una capa nueva aprende a través del adaptador, no entera; aporta menos que pasar a un modelo base mayor.
-- Todavía no modifica su propio código.
+- Solo aprende lo que una máquina puede comprobar. Lo que queda por añadir, por orden de alcance: demostrar teoremas (Lean), aprender leyendo (internet o documentos) y modificar su propio código fuente.
+- Un modelo pequeño inventará pocos ejercicios válidos al principio, y un enunciado inventado puede ser ambiguo; por eso sus ejercicios no entran en la validación ni en el examen.
+- Una capa nueva aprende a través del adaptador, no entera; aporta menos que trasladarse a un modelo base mayor.
+- El techo lo pone la GPU: en una T4 o una RTX doméstica hablamos de modelos de 1,5 a 7 mil millones de parámetros.
 
 Los proyectos anteriores (el agente en C++ con Ollama incluido) están en `legacy/`.

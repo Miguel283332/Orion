@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 import random
 import re
+import unicodedata
 
 import sympy as sp
 from sympy.parsing.sympy_parser import (convert_xor, implicit_multiplication_application, parse_expr,
@@ -81,10 +82,19 @@ def _partes(s: str) -> list[str]:
     return [t for t in (p.strip() for p in s.replace(";", ",").split(",")) if t]
 
 
+def _texto_normal(s: str) -> str:
+    s = unicodedata.normalize("NFD", s.lower())
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn" and c not in "«»\"'`*_¿?¡!()[]")
+    s = re.sub(r"\s+", " ", s).strip().rstrip(".").strip()
+    return re.sub(r"\s*,\s*", ",", s)
+
+
 def correcta(p: Problema, respuesta: str | None) -> bool:
     if not respuesta:
         return False
     try:
+        if p.tipo == "texto":
+            return _texto_normal(respuesta) == _texto_normal(p.verdad)
         if p.tipo == "num":
             e = _expr(respuesta)
             if e is None:                                   # "45 m", "45 metros": se toma el primer número
@@ -117,18 +127,21 @@ def correcta(p: Problema, respuesta: str | None) -> bool:
 
 
 def juzgar(p: Problema, texto: str) -> bool:
-    """¿Es correcta la respuesta completa del modelo (razonamiento + línea RESPUESTA:)?"""
+    """¿Es correcta la respuesta completa del modelo (razonamiento + línea RESPUESTA:, o un bloque de código)?"""
+    if p.tipo == "codigo":
+        from .programas import correcto
+        try:
+            return correcto(p, texto)
+        except Exception:
+            return False
     return correcta(p, extraer_respuesta(texto))
 
 
 def autoprueba(n: int = 200, semilla: int = 0) -> int:
     """Comprueba que el juez acepta la verdad de n problemas al azar. Devuelve cuántos falla (debe ser 0)."""
-    from .problemas import DOMINIOS, generar
+    from .problemas import DOMINIOS, generar, texto_de_referencia
     r, fallos = random.Random(semilla), 0
     for i in range(n):
-        p = generar(DOMINIOS[i % len(DOMINIOS)], i % 5 + 1, r)
-        verdad = p.verdad
-        if p.tipo == "primitiva":
-            verdad = sp.sstr(sp.integrate(sp.sympify(p.verdad), _x))
-        fallos += not correcta(p, verdad)
+        p = generar(DOMINIOS[i % len(DOMINIOS)], (i // len(DOMINIOS)) % 5 + 1, r)
+        fallos += not juzgar(p, texto_de_referencia(p))
     return fallos

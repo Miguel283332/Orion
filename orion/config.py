@@ -14,9 +14,11 @@ class Config:
     problemas_por_generacion: int = 96
     intentos_por_problema: int = 4       # respuestas distintas por problema; el juez se queda con las buenas
     temperatura: float = 0.8
-    max_tokens: int = 192
+    max_tokens: int = 256
     lote_generacion: int = 16
-    usar_soluciones_de_referencia: bool = True   # si falla todos los intentos, aprende de la respuesta calculada por SymPy
+    usar_soluciones_de_referencia: bool = True   # si falla todos los intentos, aprende de la respuesta correcta conocida
+    inventos_por_generacion: int = 8     # ejercicios de programación que intenta inventarse en cada generación (0 = ninguno)
+    parte_inventados: float = 0.2        # fracción de la exploración dedicada a resolver sus propios ejercicios
     # entrenamiento
     ejemplos_por_entrenamiento: int = 512
     epocas: int = 2
@@ -52,6 +54,9 @@ class Config:
 class Estado:
     generacion: int = 0
     modelo_base: str = ""                # nombre o carpeta del modelo sobre el que va el adaptador
+    modelo_original: str = ""            # el modelo de Hugging Face del que desciende el actual
+    migracion_descartada: str = ""       # modelo mayor que ya probó y no le mejoró
+    migraciones: int = 0
     adaptador: str = ""                  # carpeta (relativa a datos) del adaptador aceptado; "" = ninguno todavía
     rango: int = 0
     modulos: list = field(default_factory=list)

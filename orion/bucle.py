@@ -5,7 +5,9 @@ Cada generación:
 2. ENTRENAR: ajusta sus pesos (LoRA) con las respuestas verificadas.
 3. MEDIR: repite la validación (siempre los mismos problemas, que nunca entran en el entrenamiento).
 4. ACEPTAR O DESHACER: si acierta claramente más, se queda con los pesos nuevos; si no, vuelve a los anteriores.
-5. CRECER: tras varias generaciones sin mejorar, amplía su capacidad (más rango, más módulos, capas nuevas).
+5. CRECER: tras varias generaciones sin mejorar, amplía su capacidad (más rango, más módulos, capas nuevas) y, si la
+   GPU lo permite, se traslada a un modelo base mayor llevándose todo lo aprendido.
+Además, en cada generación INVENTA ejercicios de programación nuevos; los que funcionan pasan a su currículo.
 """
 from __future__ import annotations
 
@@ -17,9 +19,10 @@ from pathlib import Path
 
 from . import curriculo as cur
 from .config import Config, Estado, anadir_linea, leer_lineas
-from .juez import MARCA, juzgar
-from .modelo import MODULOS_MLP, Modelo, elegir_modelo
-from .problemas import Problema, conjunto_fijo, respuesta_de_referencia
+from .juez import juzgar
+from .modelo import MODULOS_MLP, Modelo, elegir_modelo, siguiente_modelo
+from .problemas import Problema, conjunto_fijo, texto_de_referencia
+from .programas import SISTEMA_INVENTAR, invento_valido, peticion_de_invento
 
 
 class Orion:
@@ -33,10 +36,12 @@ class Orion:
         if not self.estado.modelo_base:
             nombre = modelo or self.cfg.modelo
             self.estado.modelo_base = elegir_modelo() if nombre == "auto" else nombre
+            self.estado.modelo_original = self.estado.modelo_base
             self.estado.rango, self.estado.modulos, self.estado.lr = self.cfg.rango_lora, list(self.cfg.modulos), self.cfg.lr
         self.validacion = conjunto_fijo(self.cfg.n_validacion, self.cfg.semilla)
         self.examen = conjunto_fijo(self.cfg.n_examen, self.cfg.semilla + 1, excluir={p.huella for p in self.validacion})
         self.reservados = {p.huella for p in self.validacion + self.examen}
+        self.inventados = [Problema(**d) for d in leer_lineas(self.datos / "inventados.jsonl")]
         self.modelo = self._cargar_modelo()
 
     # ------------------------------------------------------------ utilidades
@@ -49,7 +54,10 @@ class Orion:
 
     def _cargar_modelo(self) -> Modelo:
         self.decir(f"cargo el modelo {self.estado.modelo_base}" + (f" con el adaptador {self.estado.adaptador}" if self.estado.adaptador else ""))
-        return Modelo(self._base(), self._ruta(self.estado.adaptador), self.estado.rango, self.estado.modulos)
+        return self._crear_modelo(self._base(), self._ruta(self.estado.adaptador), self.estado.rango, self.estado.modulos)
+
+    def _crear_modelo(self, base: str, adaptador: Path | None, rango: int, modulos: list) -> Modelo:
+        return Modelo(base, adaptador, rango, modulos)
 
     def parar(self, *_):
         self._parar = True
@@ -96,10 +104,34 @@ class Orion:
         self.decir(f"punto de partida: validación {self._pct(val)}, examen {self._pct(exa)}")
         return True
 
+    def inventar(self) -> None:
+        """Se inventa ejercicios de programación. Solo entran en su currículo los que se ejecutan bien y no están repetidos."""
+        n = self.cfg.inventos_por_generacion
+        if n <= 0:
+            return
+        r = random.Random(f"inventar-{self.estado.generacion}-{time.time()}")
+        textos = self.modelo.generar([peticion_de_invento(r) for _ in range(n)], n=1, temperatura=0.9, max_tokens=max(320, self.cfg.max_tokens),
+                                     lote=self.cfg.lote_generacion, parar=self._hay_que_parar, sistema=SISTEMA_INVENTAR)
+        conocidos = {p.huella for p in self.inventados} | {p.referencia for p in self.inventados}
+        nuevos = 0
+        for t in textos:
+            p = invento_valido(t[0])
+            if p is None or p.huella in conocidos or p.referencia in conocidos:
+                continue
+            conocidos |= {p.huella, p.referencia}
+            self.inventados.append(p)
+            anadir_linea(self.datos / "inventados.jsonl", p.a_dict())
+            nuevos += 1
+        if nuevos:
+            self.decir(f"  ★ me he inventado {nuevos} {'ejercicio nuevo' if nuevos == 1 else 'ejercicios nuevos'} que funcionan"
+                       f" (ya tengo {len(self.inventados)} propios)")
+
     def explorar(self) -> int:
         cfg = self.cfg
         r = random.Random(f"{cfg.semilla}-{self.estado.generacion}-{time.time()}")
-        problemas = cur.elegir(self.estado.curriculo, cfg.problemas_por_generacion * self.estado.multiplicador_exploracion, r, self.reservados)
+        total = cfg.problemas_por_generacion * self.estado.multiplicador_exploracion
+        propios = r.sample(self.inventados, min(len(self.inventados), int(total * cfg.parte_inventados)))
+        problemas = cur.elegir(self.estado.curriculo, total - len(propios), r, self.reservados) + propios
         intentos = self.modelo.generar([p.enunciado for p in problemas], n=cfg.intentos_por_problema, temperatura=cfg.temperatura,
                                        max_tokens=cfg.max_tokens, lote=max(1, cfg.lote_generacion // 2), parar=self._hay_que_parar)
         resultados, propias, referencia = [], 0, 0
@@ -111,7 +143,7 @@ class Orion:
                 anadir_linea(self.datos / "ejemplos.jsonl", {**p.a_dict(), "respuesta": buenas[0], "origen": "propia", "generacion": self.estado.generacion})
             elif cfg.usar_soluciones_de_referencia:
                 referencia += 1
-                anadir_linea(self.datos / "ejemplos.jsonl", {**p.a_dict(), "respuesta": f"{MARCA} {respuesta_de_referencia(p)}", "origen": "referencia",
+                anadir_linea(self.datos / "ejemplos.jsonl", {**p.a_dict(), "respuesta": texto_de_referencia(p), "origen": "referencia",
                                                              "generacion": self.estado.generacion})
         for aviso in cur.anotar(self.estado.curriculo, resultados):
             self.decir("  ★ " + aviso)
@@ -119,7 +151,7 @@ class Orion:
                    (f" y estudié la solución de {referencia}" if referencia else ""))
         return len(resultados)
 
-    def _ejemplos(self) -> list[tuple[str, str]]:
+    def _ejemplos(self, cupo: int = 0) -> list[tuple[str, str]]:
         """Los de esta generación y, hasta completar el cupo, un repaso al azar de los anteriores (para no olvidar)."""
         ultimos: dict[str, dict] = {}
         for e in leer_lineas(self.datos / "ejemplos.jsonl"):
@@ -128,7 +160,7 @@ class Orion:
         nuevos = [e for e in todos if e.get("generacion") == self.estado.generacion]
         viejos = [e for e in todos if e.get("generacion") != self.estado.generacion]
         random.Random(self.estado.generacion).shuffle(viejos)
-        elegidos = (nuevos + viejos)[: self.cfg.ejemplos_por_entrenamiento]
+        elegidos = (nuevos + viejos)[: cupo or self.cfg.ejemplos_por_entrenamiento]
         return [(e["enunciado"], e["respuesta"]) for e in elegidos]
 
     def generacion(self) -> None:
@@ -136,7 +168,8 @@ class Orion:
         e.generacion += 1
         t0 = time.time()
         self.decir(f"\n— generación {e.generacion} —")
-        if self.explorar() == 0 or self._parar:
+        self.inventar()
+        if self._parar or self.explorar() == 0 or self._parar:
             e.generacion -= 1
             return
         ejemplos = self._ejemplos()
@@ -204,12 +237,14 @@ class Orion:
         elif e.multiplicador_exploracion < 4:
             e.multiplicador_exploracion = 4
             accion = "exploro cuatro veces más problemas por generación"
+        elif self._siguiente_modelo():
+            return self.migrar(self._siguiente_modelo())
         else:
             e.sin_mejorar = 0
             e.guardar(self.datos)
             self._registrar(tipo="limite")
-            self.decir("  ⚠ He agotado las ampliaciones que caben en este modelo y este hardware. Para seguir progresando hace falta "
-                       "un modelo base mayor (config.json → modelo) o una GPU con más memoria.")
+            self.decir("  ⚠ He agotado las ampliaciones que caben en este modelo y este hardware. Con una GPU con más memoria me "
+                       "trasladaré sola a un modelo mayor; mientras tanto sigo explorando y entrenando.")
             return
         estructural = self.modelo.rango != e.rango or self.modelo.modulos != e.modulos or "capa nueva" in accion
         if estructural:                                    # comprobar que ampliar no ha cambiado lo que ya sabía
@@ -238,6 +273,54 @@ class Orion:
         self._registrar(tipo="ampliacion", accion=accion, capas=self.modelo.num_capas(), rango=e.rango, modulos=e.modulos,
                         parametros=total, entrenables=entrenables)
         self.decir(f"  ★ {accion}. Ahora tengo {total / 1e6:.1f} M de parámetros ({entrenables / 1e6:.2f} M entrenables).")
+
+    def _siguiente_modelo(self) -> str | None:
+        s = siguiente_modelo(self.estado.modelo_original)
+        return s if s and s != self.estado.migracion_descartada else None
+
+    def migrar(self, nuevo: str) -> None:
+        """Se traslada a un modelo base mayor: lo entrena con todo lo que ha verificado hasta ahora y solo se queda en él
+        si no acierta menos que el actual."""
+        e, cfg = self.estado, self.cfg
+        self.decir(f"  he agotado este modelo: pruebo a trasladarme a uno mayor ({nuevo}) llevándome lo aprendido…")
+        self.modelo = None                                 # libera la memoria del modelo actual antes de cargar el mayor
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+        try:
+            self.modelo = self._crear_modelo(nuevo, None, cfg.rango_lora, list(cfg.modulos))
+            ejemplos = self._ejemplos(cupo=4 * cfg.ejemplos_por_entrenamiento)
+            perdida = self.modelo.entrenar(ejemplos, cfg.epocas, cfg.lote_entrenamiento, cfg.lr, e.generacion, parar=self._hay_que_parar) if ejemplos else 0.0
+            val = self.medir(self.validacion) if perdida == perdida and not self._parar else []
+        except Exception as error:                         # no cabe en memoria, no se pudo descargar…
+            self.decir(f"  no pude usar {nuevo}: {str(error)[:200]}")
+            val = []
+        ganados, perdidos, _ = cur.comparar(e.validacion, val) if val else (0, 1, 1)
+        if self._parar or not val or ganados < perdidos:
+            if not self._parar:
+                self.decir(f"  el modelo mayor no me mejora ({self._pct(e.validacion)} → {self._pct(val) if val else 'sin medida'}): sigo en el actual.")
+                e.migracion_descartada, e.sin_mejorar = nuevo, 0
+                e.guardar(self.datos)
+                self._registrar(tipo="migracion", modelo=nuevo, aceptada=False)
+            self.modelo = self._cargar_modelo()
+            return
+        base_anterior = e.modelo_base
+        self.decir(f"  ★ ME TRASLADO a {nuevo}: validación {self._pct(e.validacion)} → {self._pct(val)}.")
+        e.modelo_base = e.modelo_original = nuevo
+        e.rango, e.modulos, e.capas_nuevas, e.multiplicador_exploracion = cfg.rango_lora, list(cfg.modulos), 0, 1
+        e.validacion, e.sin_mejorar, e.lr, e.migraciones = val, 0, cfg.lr, e.migraciones + 1
+        exa = self.medir(self.examen)
+        if not self._parar:
+            e.examen = exa
+        self._guardar_aceptado()
+        if base_anterior.startswith("bases/"):
+            shutil.rmtree(self.datos / base_anterior, ignore_errors=True)
+        entrenables, total = self.modelo.parametros()
+        self._registrar(tipo="migracion", modelo=nuevo, aceptada=True, validacion=sum(val), examen=sum(e.examen), parametros=total)
+        self.decir(f"  ahora tengo {total / 1e6:.0f} M de parámetros; examen {self._pct(e.examen)}")
 
     # ------------------------------------------------------------ vida
     def vivir(self, generaciones: int = 0, minutos: float = 0) -> None:
@@ -269,13 +352,17 @@ class Orion:
         for d in sorted(e.curriculo):
             t, n = cur.tasa(e.curriculo, d, e.curriculo[d]["nivel"])
             lineas.append(f"  {d:<12} nivel {e.curriculo[d]['nivel']}  {100 * t:3.0f} %" + ("" if n else "  (sin datos)"))
-        hist = [g for g in leer_lineas(self.datos / "generaciones.jsonl") if g.get("tipo") in ("generacion", "ampliacion", "limite")][-8:]
+        if self.inventados:
+            lineas.append(f"Ejercicios inventados por mí que funcionan: {len(self.inventados)}")
+        hist = [g for g in leer_lineas(self.datos / "generaciones.jsonl") if g.get("tipo") in ("generacion", "ampliacion", "limite", "migracion")][-8:]
         if hist:
             lineas.append("Últimos pasos:")
         for g in hist:
             if g["tipo"] == "generacion":
                 lineas.append(f"  g{g['generacion']}: validación {g['validacion_antes']} → {g['validacion_despues']} "
                               f"{'✓ aceptada' if g['aceptada'] else '✗ deshecha'}")
+            elif g["tipo"] == "migracion":
+                lineas.append(f"  g{g['generacion']}: traslado a {g['modelo']} " + ("✓ hecho" if g["aceptada"] else "✗ descartado"))
             else:
                 lineas.append(f"  g{g['generacion']}: " + (g.get("accion") or "límite del modelo y del hardware alcanzado"))
         return "\n".join(lineas)

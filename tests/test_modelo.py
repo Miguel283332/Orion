@@ -108,7 +108,7 @@ def test_ciclo_completo_con_red_real(base, tmp_path):
     from orion.bucle import Orion
     escribir_json(tmp_path / "config.json", {"modelo": str(base), "n_validacion": 18, "n_examen": 18, "problemas_por_generacion": 6,
                                              "intentos_por_problema": 2, "max_tokens": 6, "ejemplos_por_entrenamiento": 16, "epocas": 1,
-                                             "paciencia": 1, "rango_lora": 4, "rango_max": 8, "max_capas_nuevas": 1})
+                                             "paciencia": 1, "rango_lora": 4, "rango_max": 8, "max_capas_nuevas": 1, "inventos_por_generacion": 2})
     mensajes = []
     o = Orion(tmp_path, decir=mensajes.append)
     o.vivir(generaciones=4)

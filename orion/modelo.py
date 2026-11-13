@@ -16,17 +16,30 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from .juez import MARCA
 
 SISTEMA = ("Eres Orion. Resuelve el problema. Razona en pocas líneas y termina SIEMPRE con una última línea de la forma "
-           f"'{MARCA} <resultado>' con solo el resultado, en notación de Python (* para multiplicar, ** para potencias, "
-           "fracciones como 3/4).")
+           f"'{MARCA} <resultado>' con solo el resultado (las expresiones matemáticas, en notación de Python: * para multiplicar, "
+           "** para potencias, fracciones como 3/4). Si te piden una función, responde en su lugar con la función completa "
+           "dentro de un bloque ```python.")
+FAMILIA = [("Qwen/Qwen2.5-0.5B-Instruct", 0), ("Qwen/Qwen2.5-1.5B-Instruct", 6), ("Qwen/Qwen2.5-3B-Instruct", 14),
+           ("Qwen/Qwen2.5-7B-Instruct", 36)]            # modelo y GB de memoria de GPU que necesita para entrenarse con holgura
 MODULOS_MLP = ["gate_proj", "up_proj", "down_proj"]
 
 
 def elegir_modelo() -> str:
     """El mayor Qwen2.5 que se puede entrenar con holgura en la GPU que haya."""
-    if not torch.cuda.is_available():
-        return "Qwen/Qwen2.5-0.5B-Instruct"
-    gb = torch.cuda.get_device_properties(0).total_memory / 2**30
-    return "Qwen/Qwen2.5-3B-Instruct" if gb >= 20 else "Qwen/Qwen2.5-1.5B-Instruct" if gb >= 6 else "Qwen/Qwen2.5-0.5B-Instruct"
+    return [m for m, gb in FAMILIA if gb <= memoria_gpu()][-1]
+
+
+def memoria_gpu() -> float:
+    return torch.cuda.get_device_properties(0).total_memory / 2**30 if torch.cuda.is_available() else 0.0
+
+
+def siguiente_modelo(actual: str) -> str | None:
+    """El modelo inmediatamente mayor de la misma familia, si cabe en la GPU que hay ahora."""
+    nombres = [m for m, _ in FAMILIA]
+    if actual not in nombres or nombres.index(actual) + 1 >= len(nombres):
+        return None
+    m, gb = FAMILIA[nombres.index(actual) + 1]
+    return m if gb <= memoria_gpu() else None
 
 
 def _tipo() -> torch.dtype:
@@ -138,8 +151,8 @@ class Modelo:
         return True
 
     # ------------------------------------------------------------ uso
-    def texto_chat(self, enunciado: str, respuesta: str | None = None) -> str:
-        mensajes = [{"role": "system", "content": SISTEMA}, {"role": "user", "content": enunciado}]
+    def texto_chat(self, enunciado: str, respuesta: str | None = None, sistema: str = SISTEMA) -> str:
+        mensajes = [{"role": "system", "content": sistema}, {"role": "user", "content": enunciado}]
         t = self.tok.apply_chat_template(mensajes, tokenize=False, add_generation_prompt=True)
         return t if respuesta is None else t + respuesta + (self.tok.eos_token or "")
 
@@ -147,8 +160,8 @@ class Modelo:
         return torch.autocast("cuda", dtype=self.tipo, enabled=self.dispositivo == "cuda")
 
     @torch.no_grad()
-    def generar(self, enunciados: list[str], n: int = 1, temperatura: float = 0.0, max_tokens: int = 192, lote: int = 16,
-                parar=None) -> list[list[str]]:
+    def generar(self, enunciados: list[str], n: int = 1, temperatura: float = 0.0, max_tokens: int = 256, lote: int = 16,
+                parar=None, sistema: str = SISTEMA) -> list[list[str]]:
         """n respuestas por enunciado. Con temperatura 0 es determinista (y n debe ser 1)."""
         self.red.eval()
         self.tok.padding_side = "left"
@@ -156,7 +169,7 @@ class Modelo:
         for i in range(0, len(enunciados), lote):
             if parar and parar():
                 break
-            textos = [self.texto_chat(e) for e in enunciados[i:i + lote]]
+            textos = [self.texto_chat(e, sistema=sistema) for e in enunciados[i:i + lote]]
             ent = self.tok(textos, return_tensors="pt", padding=True, add_special_tokens=False).to(self.dispositivo)
             muestreo = dict(do_sample=True, temperature=temperatura, top_p=0.95, num_return_sequences=n) if temperatura > 0 else dict(do_sample=False)
             with self._autocast():

@@ -9,6 +9,8 @@ Tipos de respuesta:
 - "lista":     varias expresiones separadas por comas, en el orden pedido.
 - "conjunto":  varias expresiones separadas por comas, en cualquier orden.
 - "primitiva": una expresión cuya derivada equivale a la verdad (integrales: vale cualquier constante).
+- "texto":     una palabra o frase; correcta si coincide sin contar mayúsculas, tildes ni signos.
+- "codigo":    una función de Python; correcta si da las salidas esperadas al ejecutarla (ver programas.py).
 """
 from __future__ import annotations
 
@@ -28,7 +30,8 @@ class Problema:
     nivel: int
     enunciado: str
     tipo: str
-    verdad: str          # en sintaxis de SymPy; para "lista" y "conjunto", separada por comas
+    verdad: str          # en sintaxis de SymPy; para "lista" y "conjunto", separada por comas; para "codigo", JSON con los casos
+    referencia: str = "" # solo "codigo": una solución correcta
 
     @property
     def huella(self) -> str:
@@ -200,9 +203,20 @@ def respuesta_de_referencia(p: Problema) -> str:
     return p.verdad
 
 
+def texto_de_referencia(p: Problema) -> str:
+    """Una respuesta completa y correcta, con el formato que se le pide al modelo."""
+    if p.tipo == "codigo":
+        return f"```python\n{p.referencia}\n```"
+    return f"RESPUESTA: {respuesta_de_referencia(p)}"
+
+
+from .programas import codigo            # noqa: E402  (necesitan Problema, definido arriba)
+from .razonamiento import lenguaje, logica  # noqa: E402
+
 GENERADORES = {
     "aritmetica": aritmetica, "lineales": lineales, "cuadraticas": cuadraticas, "expandir": expandir, "derivadas": derivadas,
     "integrales": integrales, "sistemas": sistemas, "cinematica": cinematica, "energia": energia,
+    "logica": logica, "lenguaje": lenguaje, "codigo": codigo,
 }
 DOMINIOS = list(GENERADORES)
 
