@@ -15,6 +15,12 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .juez import MARCA
 
+try:   # peft se niega a crear el adaptador si hay un torchao antiguo instalado (Colab lo trae); Orion no usa torchao
+    import peft.tuners.lora.torchao as _torchao
+    _torchao.is_torchao_available = lambda: False
+except Exception:
+    pass
+
 SISTEMA = ("Eres Orion. Resuelve el problema. Razona en pocas líneas y termina SIEMPRE con una última línea de la forma "
            f"'{MARCA} <resultado>' con solo el resultado (las expresiones matemáticas, en notación de Python: * para multiplicar, "
            "** para potencias, fracciones como 3/4). Si te piden una función, responde en su lugar con la función completa "
