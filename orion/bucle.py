@@ -20,7 +20,7 @@ from pathlib import Path
 from . import curriculo as cur
 from .config import Config, Estado, anadir_linea, leer_lineas
 from .juez import juzgar
-from .modelo import MODULOS_MLP, Modelo, elegir_modelo, siguiente_modelo
+from .modelo import MODULOS_MLP, Modelo, normalizar_modelo, siguiente_modelo
 from .problemas import Problema, conjunto_fijo, texto_de_referencia
 from .programas import SISTEMA_INVENTAR, invento_valido, peticion_de_invento
 
@@ -34,8 +34,9 @@ class Orion:
         self.decir = decir
         self._parar = False
         if not self.estado.modelo_base:
-            nombre = modelo or self.cfg.modelo
-            self.estado.modelo_base = elegir_modelo() if nombre == "auto" else nombre
+            self.estado.modelo_base, aviso = normalizar_modelo(modelo or self.cfg.modelo)
+            if aviso:
+                self.decir(aviso)
             self.estado.modelo_original = self.estado.modelo_base
             self.estado.rango, self.estado.modulos, self.estado.lr = self.cfg.rango_lora, list(self.cfg.modulos), self.cfg.lr
         self.validacion = conjunto_fijo(self.cfg.n_validacion, self.cfg.semilla)
